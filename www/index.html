@@ -82,6 +82,7 @@
     display:flex;
     flex-direction:column;
     background: var(--bg-grad);
+    padding-top: var(--safe-area-inset-top, 0px);
   }
   @media (min-width:520px){
     body{padding:28px 0;}
@@ -117,7 +118,7 @@
   .topbar .date{font-size:13px; color:var(--muted); font-weight:600;}
 
   .view{
-    padding: calc(4px + var(--safe-area-inset-top, 0px)) 20px calc(110px + var(--safe-area-inset-bottom, 0px)) 20px;
+    padding: 4px 20px calc(110px + var(--safe-area-inset-bottom, 0px)) 20px;
     flex:1; min-width:0;
     min-height:0;              /* иначе flex-элемент не даёт себя сжать и overflow не включается */
     overflow-y:auto;
