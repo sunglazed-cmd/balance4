@@ -75,6 +75,25 @@ interface Profile {
   goal: 'lose' | 'maintain' | 'gain';
 }
 
+/** Что человек уже ел: имя, калорийность и последняя порция — из этого строятся подсказки. */
+interface FoodHistoryEntry {
+  name: string;
+  kcal100g: number;
+  grams: number;   // сколько взяли в прошлый раз
+  count: number;   // сколько раз добавляли
+  last: number;    // время последнего добавления
+}
+
+/** То же для тренировок. met = null, если калории вводили руками. */
+interface WorkoutHistoryEntry {
+  name: string;
+  met: number | null;
+  minutes: number | null;
+  kcal: number;
+  count: number;
+  last: number;
+}
+
 /** A food the user added by hand, so it shows up in search next time. */
 interface CustomFood {
   name: string;
@@ -99,6 +118,8 @@ interface DayTotals {
 /* ===================== STATE ===================== */
 let profile: Profile | null = null;
 let customFoods: CustomFood[] = [];
+let foodHistory: FoodHistoryEntry[] = [];        // всё, что уже добавляли, для подсказок
+let workoutHistory: WorkoutHistoryEntry[] = [];  // то же по тренировкам
 let today: DayData = { foods: [], workouts: [], steps: 0 };
 let currentDayKey: string | null = null; // date key that `today` currently holds data for
 let historyCache: Record<string, DayData> = {};   // dateKey -> day record
@@ -875,10 +896,34 @@ function readProfileForm(){
   };
 }
 
+const ACTIVITY_LABELS: Record<string, string> = {
+  '1.2': 'минимум движения',
+  '1.375': '1–3 тренировки в неделю',
+  '1.55': '3–5 тренировок в неделю',
+  '1.725': '6–7 тренировок в неделю',
+  '1.9': 'физический труд'
+};
+
+const GOAL_LABELS: Record<Profile['goal'], string> = {
+  lose: 'снижение веса, −20 %',
+  maintain: 'удержание веса, без правки',
+  gain: 'набор массы, +12 %'
+};
+
+/** Показывает не только итог, но и из чего он сложился — иначе цифра выглядит взятой с потолка. */
 function updateTdeePreview(){
   const p = readProfileForm();
   const cal = calcGoalCalories(p);
   el('profile-tdee-preview').textContent = fmt(cal) + ' ккал';
+
+  const bmr = calcBMR(p);
+  const activityText = ACTIVITY_LABELS[String(p.activity)] || 'коэффициент ' + p.activity;
+  const goalFactor = p.goal === 'lose' ? 0.8 : p.goal === 'gain' ? 1.12 : 1;
+  el('profile-tdee-breakdown').innerHTML =
+    'обмен покоя ' + fmt(bmr) + ' × ' + String(p.activity).replace('.', ',') + ' (' + activityText + ')' +
+    (goalFactor === 1 ? '' : ' × ' + String(goalFactor).replace('.', ',')) +
+    '<br>цель: ' + GOAL_LABELS[p.goal] +
+    '<br>шаги и тренировки прибавляются к бюджету сверху';
 }
 
 function fillProfileForm(){
@@ -906,13 +951,94 @@ async function saveProfile(){
   });
 });
 
+/* ===================== ИСТОРИЯ ДЛЯ ПОДСКАЗОК =====================
+   Всё, что человек уже вводил, запоминается вместе с калорийностью и последней
+   порцией: в следующий раз то же самое добавляется в два касания, без поиска. */
+
+const HISTORY_LIMIT = 40;   // сколько позиций держим — дальше вытесняются самые старые
+const SUGGEST_COUNT = 6;    // сколько показываем в блоке «Недавнее»
+
+/** Свежее — вперёд. */
+function byRecency(a: { last: number }, b: { last: number }): number {
+  return b.last - a.last;
+}
+
+async function rememberFood(name: string, kcal100g: number, grams: number): Promise<void> {
+  if(!name || kcal100g <= 0) return;
+  const key = name.trim().toLowerCase();
+  const found = foodHistory.find(f => f.name.trim().toLowerCase() === key);
+  if(found){
+    found.kcal100g = kcal100g;
+    found.grams = grams;
+    found.count++;
+    found.last = Date.now();
+  } else {
+    foodHistory.push({ name: name.trim(), kcal100g, grams, count: 1, last: Date.now() });
+  }
+  foodHistory.sort(byRecency);
+  foodHistory = foodHistory.slice(0, HISTORY_LIMIT);
+  await storeSet('food_history', foodHistory);
+}
+
+async function rememberWorkout(name: string, met: number | null, minutes: number | null, kcal: number): Promise<void> {
+  if(!name || kcal <= 0) return;
+  const key = name.trim().toLowerCase();
+  const found = workoutHistory.find(w => w.name.trim().toLowerCase() === key);
+  if(found){
+    found.met = met;
+    found.minutes = minutes;
+    found.kcal = kcal;
+    found.count++;
+    found.last = Date.now();
+  } else {
+    workoutHistory.push({ name: name.trim(), met, minutes, kcal, count: 1, last: Date.now() });
+  }
+  workoutHistory.sort(byRecency);
+  workoutHistory = workoutHistory.slice(0, HISTORY_LIMIT);
+  await storeSet('workout_history', workoutHistory);
+}
+
+/** Блок «Недавнее» в модалке еды — показывается, пока в поиске пусто. */
+function renderFoodHistory(): void {
+  const list = el('food-suggest');
+  if(foodHistory.length === 0){
+    list.innerHTML = '';
+    return;
+  }
+  const items = foodHistory.slice(0, SUGGEST_COUNT);
+  list.innerHTML = '<div class="suggest-head">Недавнее</div>' + items.map(f => `
+    <div class="suggest-item" onclick='selectFood(${JSON.stringify(f.name)}, ${f.kcal100g}, ${f.grams})'>
+      <div class="n">${escapeHtml(f.name)}</div>
+      <div class="k">${f.kcal100g} ккал/100г · в прошлый раз ${fmt(f.grams)} г</div>
+    </div>`).join('');
+}
+
+/** То же для тренировок: MET-запись возвращает минуты, ручная — сразу калории. */
+function renderWorkoutHistory(): void {
+  const list = el('workout-suggest');
+  if(workoutHistory.length === 0){
+    list.innerHTML = '';
+    return;
+  }
+  const items = workoutHistory.slice(0, SUGGEST_COUNT);
+  list.innerHTML = '<div class="suggest-head">Недавнее</div>' + items.map(w => {
+    const hint = w.met !== null && w.minutes ? fmt(w.minutes) + ' мин · ' + fmt(w.kcal) + ' ккал' : fmt(w.kcal) + ' ккал';
+    const call = w.met !== null
+      ? `selectWorkout(${JSON.stringify(w.name)}, ${w.met}, ${w.minutes || 30})`
+      : `selectWorkoutManual(${JSON.stringify(w.name)}, ${w.kcal})`;
+    return `
+    <div class="suggest-item" onclick='${call}'>
+      <div class="n">${escapeHtml(w.name)}</div>
+      <div class="k">${hint}</div>
+    </div>`;
+  }).join('');
+}
+
 /* ===================== FOOD MODAL ===================== */
 function openFoodModal(){
   editingFoodId = null;
-  el('food-modal-title').textContent = 'Добавить еду';
-  el('overlay-food').classList.add('show');
   el('food-search').value='';
-  el('food-suggest').innerHTML='';
+  renderFoodHistory();
   el('food-online-row').style.display='none';
   el('food-selected').style.display='none';
   foodSelectedName = null;
@@ -946,7 +1072,7 @@ function onFoodSearch(){
   const q = el('food-search').value.trim().toLowerCase();
   const list = el('food-suggest');
   const onlineRow = el('food-online-row');
-  if(q.length < 2){ list.innerHTML=''; onlineRow.style.display='none'; return; }
+  if(q.length < 2){ renderFoodHistory(); onlineRow.style.display='none'; return; }
   const matches = allFoods().filter(([n])=>n.toLowerCase().includes(q)).slice(0,7);
   if(matches.length===0){
     list.innerHTML = `<div class="empty-hint">Совпадений в базе не найдено</div>`;
@@ -961,11 +1087,11 @@ function onFoodSearch(){
   }
 }
 
-function selectFood(name, kcal100g){
+function selectFood(name: string, kcal100g: number, grams?: number){
   foodSelectedName = name;
   el('food-selected-name').textContent = name;
   el('food-kcal100').value = String(kcal100g);
-  el('food-grams').value = '100';
+  el('food-grams').value = String(grams && grams > 0 ? grams : 100);
   el('food-selected').style.display='block';
   updateFoodPreview();
   const foodSelBox = el('food-selected');
@@ -1051,6 +1177,7 @@ async function confirmAddFood(){
     customFoods.push({name, kcal100g: k100});
     await storeSet('custom_foods', customFoods);
   }
+  await rememberFood(name, k100, g);
   await persistAddTarget();
   closeFoodModal();
   showToast('Сохранено: '+name);
@@ -1062,7 +1189,7 @@ function openWorkoutModal(){
   el('workout-modal-title').textContent = 'Добавить тренировку';
   el('overlay-workout').classList.add('show');
   el('workout-search').value='';
-  el('workout-suggest').innerHTML='';
+  renderWorkoutHistory();
   el('workout-selected').style.display='none';
   workoutSelectedName = null;
   setTimeout(()=>el('workout-search').focus(), 300);
@@ -1094,7 +1221,7 @@ function editWorkoutEntry(id, mode){
 function onWorkoutSearch(){
   const q = el('workout-search').value.trim().toLowerCase();
   const list = el('workout-suggest');
-  if(q.length < 1){ list.innerHTML=''; return; }
+  if(q.length < 1){ renderWorkoutHistory(); return; }
   const matches = WORKOUT_DB.filter(([n])=>n.toLowerCase().includes(q)).slice(0,7);
   list.innerHTML = matches.length ? matches.map(([n,met])=>`
     <div class="suggest-item" onclick='selectWorkout(${JSON.stringify(n)}, ${met})'>
@@ -1104,16 +1231,27 @@ function onWorkoutSearch(){
 }
 
 let currentMet = 0;
-function selectWorkout(name, met){
+function selectWorkout(name: string, met: number, minutes?: number){
   workoutSelectedName = name; currentMet = met; workoutMode = 'met';
   el('workout-selected-name').textContent = name;
   el('workout-met-row').style.display='flex';
   el('workout-manual-row').style.display='none';
-  el('workout-minutes').value = '30';
+  el('workout-minutes').value = String(minutes && minutes > 0 ? minutes : 30);
   el('workout-selected').style.display='block';
   updateWorkoutPreview();
   const woSelBox = el('workout-selected');
   if(woSelBox.scrollIntoView) woSelBox.scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+/** Тренировка из истории, которую в прошлый раз вводили калориями, а не по MET. */
+function selectWorkoutManual(name: string, kcal: number){
+  workoutSelectedName = name; workoutMode = 'manual';
+  el('workout-selected-name').textContent = name;
+  el('workout-met-row').style.display='none';
+  el('workout-manual-row').style.display='flex';
+  el('workout-manual-kcal').value = String(kcal);
+  el('workout-selected').style.display='block';
+  updateWorkoutPreview();
 }
 
 function manualWorkoutEntry(){
@@ -1164,6 +1302,7 @@ async function confirmAddWorkout(){
       time: new Date().toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})
     });
   }
+  await rememberWorkout(name, workoutMode === 'met' ? currentMet : null, minutes, kcal);
   await persistAddTarget();
   closeWorkoutModal();
   showToast('Сохранено: '+name);
@@ -1173,6 +1312,8 @@ async function confirmAddWorkout(){
 async function init(){
   profile = await storeGet('profile');
   customFoods = (await storeGet('custom_foods')) || [];
+  foodHistory = (await storeGet('food_history')) || [];
+  workoutHistory = (await storeGet('workout_history')) || [];
   const savedToday = await storeGet('day:'+todayKey());
   today = savedToday || {foods:[], workouts:[], steps:0};
   today.steps = today.steps || 0;
@@ -1244,7 +1385,8 @@ Object.assign(window as unknown as Record<string, unknown>, {
   editWorkoutEntry, manualFoodEntry, manualWorkoutEntry, onFoodSearch,
   onWorkoutSearch, openDayEditor, openFoodModal, openWorkoutModal,
   saveProfile, searchFoodOnlineHandler, selectDay, selectFood,
-  selectWorkout, setActivity, setGender, setGoal,
+  selectWorkout, selectWorkoutManual, setActivity, setGender,
+  setGoal,
   setHistorySubtab, shiftMonth, shiftYear, switchView,
   togglePedometer, updateDayEditorSteps, updateFoodPreview, updateWorkoutPreview,
 });
