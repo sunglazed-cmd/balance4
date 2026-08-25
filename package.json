@@ -1,0 +1,24 @@
+{
+  "name": "balance-app",
+  "version": "1.0.0",
+  "description": "Баланс — трекер калорий: веб-приложение на TypeScript в нативной Android-обёртке (Capacitor)",
+  "main": "www/index.html",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "watch": "tsc --watch",
+    "sync": "npm run build && npx cap sync android",
+    "android": "npm run sync && cd android && gradlew.bat assembleDebug"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@capacitor/android": "8.5.0",
+    "@capacitor/cli": "8.5.0",
+    "@capacitor/core": "8.5.0"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}

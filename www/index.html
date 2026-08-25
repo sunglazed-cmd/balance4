@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<script>
+  // Fix mobile viewport-height bugs (Android address bar collapsing changes 100vh unreliably):
+  // provide a --vh custom property based on the real window height, kept in sync on resize.
+  (function(){
+    function setVH(){
+      document.documentElement.style.setProperty('--vh', (window.innerHeight*0.01)+'px');
+    }
+    setVH();
+    window.addEventListener('resize', setVH);
+    window.addEventListener('orientationchange', setVH);
+    document.addEventListener('visibilitychange', function(){ if(!document.hidden) setVH(); });
+    // Some native WebViews (e.g. Capacitor's Android WebView) report an incorrect
+    // window.innerHeight on the very first layout pass — recheck a few times shortly
+    // after load to self-correct instead of leaving the bottom nav stuck offscreen.
+    setTimeout(setVH, 100);
+    setTimeout(setVH, 400);
+    setTimeout(setVH, 1000);
+  })();
+</script>
+<meta name="theme-color" content="#14121B">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Баланс">
+<title>Баланс — трекер калорий</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;600;700;800&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#100E17;
+    --bg-grad: radial-gradient(120% 90% at 50% -10%, #241E36 0%, #14121C 45%, #100E17 100%);
+    --surface: rgba(255,255,255,0.045);
+    --surface-solid: #1C1826;
+    --surface2: #252031;
+    --border: rgba(255,255,255,0.08);
+    --border-soft: rgba(255,255,255,0.05);
+    --intake:#4FD1C5;
+    --intake-dim: rgba(79,209,197,0.15);
+    --burn:#FF8A62;
+    --burn-dim: rgba(255,138,98,0.15);
+    --good:#8FD14F;
+    --over:#FF5C7A;
+    --text:#F5F3F8;
+    --muted:#948FA3;
+    --muted2:#6C6780;
+    --radius: 22px;
+    --radius-sm: 14px;
+    font-size: 16px;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color: transparent;}
+  html,body{margin:0;padding:0;}
+  html, body{ overflow-x:hidden; }
+  body{
+    background: var(--bg-grad);
+    color: var(--text);
+    font-family:'Manrope', sans-serif;
+    min-height:100vh;               /* fallback for browsers without dvh */
+    min-height:calc(var(--vh, 1vh) * 100);
+    min-height:100dvh;
+    display:flex;
+    justify-content:center;
+    overscroll-behavior-y: none;
+  }
+  #phone{
+    width:100%;
+    max-width:460px;
+    min-width:0;
+    min-height:100vh;
+    min-height:calc(var(--vh, 1vh) * 100);
+    min-height:100dvh;
+    position:relative;
+    display:flex;
+    flex-direction:column;
+    background: var(--bg-grad);
+  }
+  @media (min-width:520px){
+    body{padding:28px 0;}
+    #phone{
+      min-height:calc(100vh - 56px);
+      min-height:calc(var(--vh, 1vh) * 100 - 56px);
+      min-height:calc(100dvh - 56px);
+      border-radius: 40px;
+      box-shadow: 0 40px 90px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.06);
+      overflow:hidden;
+    }
+    .navbar{
+      position:absolute; left:0; right:0; bottom:0; transform:none; max-width:none;
+      border-radius: 0 0 40px 40px;
+    }
+  }
+  .num{font-family:'JetBrains Mono', monospace;}
+  .display{font-family:'Unbounded', sans-serif;}
+  h1,h2,h3{font-family:'Unbounded', sans-serif; margin:0; font-weight:700; letter-spacing:-0.01em;}
+  p{margin:0;}
+  button{font-family:inherit; border:none; cursor:pointer; background:none; color:inherit;}
+  input,select{font-family:inherit; color:var(--text); background:transparent; border:none; outline:none; width:100%; min-width:0;}
+  ::selection{background: var(--intake); color:#0A0A0A;}
+
+  /* ---------- top bar ---------- */
+  .topbar{
+    padding: 22px 22px 6px 22px;
+    display:flex; align-items:baseline; justify-content:space-between;
+  }
+  .topbar .eyebrow{
+    font-size:12px; letter-spacing:0.14em; text-transform:uppercase; color:var(--muted2); font-weight:700;
+  }
+  .topbar h1{font-size:22px;}
+  .topbar .date{font-size:13px; color:var(--muted); font-weight:600;}
+
+  .view{ padding: 4px 20px 110px 20px; flex:1; min-width:0; }
+  .view[hidden]{display:none;}
+
+  /* ---------- ring ---------- */
+  .ring-wrap{
+    position:relative;
+    width: 250px; height:250px;
+    margin: 14px auto 6px auto;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .ring-wrap svg{ transform: rotate(-90deg); width:100%; height:100%; }
+  .ring-track{ fill:none; stroke:var(--surface2); stroke-width:16; }
+  .ring-fg{ fill:none; stroke-width:16; stroke-linecap:round; transition: stroke-dashoffset 1s cubic-bezier(.4,0,.2,1), stroke 0.6s ease; }
+  .ring-center{ position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; text-align:center; }
+  .ring-center .big{ font-size:44px; font-weight:800; line-height:1; letter-spacing:-0.02em; }
+  .ring-center .lbl{ font-size:12.5px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:0.08em; margin-top:6px;}
+  .ring-center .status{ font-size:12px; margin-top:8px; padding:4px 10px; border-radius:20px; font-weight:700; }
+
+  .chips{ display:flex; gap:10px; margin: 18px 0 6px 0; }
+  .chip{
+    flex:1; min-width:0; background:var(--surface); border:1px solid var(--border-soft); border-radius:16px;
+    padding:12px 10px; text-align:center;
+  }
+  .chip .dot{ width:7px; height:7px; border-radius:50%; display:inline-block; margin-right:5px; }
+  .chip .k{ font-size:11px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:0.05em;}
+  .chip .v{ font-size:19px; font-weight:800; margin-top:3px; font-family:'JetBrains Mono',monospace;}
+
+  /* ---------- pedometer ---------- */
+  .pedo-card{
+    margin-top:14px; background:linear-gradient(135deg, rgba(79,209,197,0.10), rgba(255,138,98,0.06));
+    border:1px solid var(--border-soft); border-radius:20px; padding:16px;
+  }
+  .pedo-top{ display:flex; align-items:center; gap:12px; }
+  .pedo-icon{ width:44px; height:44px; border-radius:13px; background:var(--surface); display:flex; align-items:center; justify-content:center; font-size:21px; flex-shrink:0; }
+  .pedo-main{ flex:1; min-width:0; }
+  .pedo-steps{ display:flex; align-items:baseline; gap:6px; }
+  .pedo-steps .num{ font-size:26px; font-weight:800; line-height:1; }
+  .pedo-steps-lbl{ font-size:12px; color:var(--muted); font-weight:700; }
+  .pedo-sub{ font-size:12.5px; color:var(--muted); margin-top:4px; font-weight:600; }
+  .pedo-sep{ margin:0 6px; opacity:0.5; }
+  .pedo-toggle{
+    display:flex; align-items:center; gap:7px; background:var(--surface); border:1px solid var(--border-soft);
+    padding:9px 13px; border-radius:30px; font-size:12.5px; font-weight:700; color:var(--text); flex-shrink:0;
+    white-space:nowrap;
+  }
+  .pedo-dot{ width:8px; height:8px; border-radius:50%; background:var(--muted2); flex-shrink:0; }
+  .pedo-dot.active{ background:var(--good); box-shadow:0 0 0 0 rgba(143,209,79,0.6); animation: pedo-pulse 1.6s infinite; }
+  .pedo-dot.pending{ background:#F5C34D; }
+  @keyframes pedo-pulse{
+    0%{ box-shadow:0 0 0 0 rgba(143,209,79,0.55); }
+    70%{ box-shadow:0 0 0 7px rgba(143,209,79,0); }
+    100%{ box-shadow:0 0 0 0 rgba(143,209,79,0); }
+  }
+  .pedo-note{ font-size:11px; color:var(--muted2); line-height:1.5; margin-top:12px; }
+
+  /* ---------- section headers ---------- */
+  .sec-head{ display:flex; align-items:center; justify-content:space-between; margin: 26px 0 12px 0; }
+  .sec-head h2{ font-size:16px; }
+  .add-btn{
+    display:flex; align-items:center; gap:6px;
+    background: var(--surface); border:1px solid var(--border-soft);
+    padding:8px 14px; border-radius:30px; font-size:13px; font-weight:700; color:var(--text);
+  }
+  .add-btn.food{ box-shadow: inset 0 0 0 1px rgba(79,209,197,0.25); }
+  .add-btn.workout{ box-shadow: inset 0 0 0 1px rgba(255,138,98,0.25); }
+  .add-btn svg{ width:14px; height:14px; }
+
+  /* ---------- entry rows ---------- */
+  .entry-list{ display:flex; flex-direction:column; gap:8px; }
+  .entry{
+    display:flex; align-items:center; gap:12px;
+    background:var(--surface); border:1px solid var(--border-soft); border-radius:16px;
+    padding:12px 12px; cursor:pointer;
+  }
+  .entry .ico{
+    width:38px; height:38px; border-radius:11px; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center; font-size:17px;
+  }
+  .entry.food .ico{ background:var(--intake-dim); }
+  .entry.workout .ico{ background:var(--burn-dim); }
+  .entry .info{ flex:1; min-width:0; }
+  .entry .info .name{ font-size:14.5px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .entry .info .sub{ font-size:12.5px; color:var(--muted); margin-top:2px; }
+  .entry .kcal{ font-family:'JetBrains Mono',monospace; font-weight:700; font-size:14px; white-space:nowrap; }
+  .entry.food .kcal{ color:var(--intake); }
+  .entry.workout .kcal{ color:var(--burn); }
+  .entry .del{ width:26px; height:26px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:var(--muted2); flex-shrink:0; }
+  .entry .del:active{ background:rgba(255,92,122,0.18); color:var(--over); }
+  .empty-hint{ text-align:center; color:var(--muted2); font-size:13px; padding: 22px 10px; border:1px dashed var(--border); border-radius:16px; }
+
+  /* ---------- bottom nav ---------- */
+  .navbar{
+    position:fixed; left:50%; bottom:0; transform:translateX(-50%);
+    width:100%; max-width:460px;
+    background: rgba(20,17,28,0.82);
+    backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+    border-top:1px solid var(--border-soft);
+    display:flex; padding: 8px 10px calc(10px + env(safe-area-inset-bottom)) 10px;
+    z-index:40;
+  }
+  .navbtn{ flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; padding:6px 0; color:var(--muted2); }
+  .navbtn svg{ width:21px; height:21px; }
+  .navbtn span{ font-size:10.5px; font-weight:700; }
+  .navbtn.active{ color: var(--intake); }
+
+  /* ---------- history ---------- */
+  .hist-subnav{ display:flex; background:var(--surface); border:1px solid var(--border-soft); border-radius:14px; padding:4px; gap:4px; margin-bottom:16px; }
+  .hist-subnav button{ flex:1; padding:9px 4px; border-radius:10px; font-size:13px; font-weight:700; color:var(--muted); text-align:center; }
+  .hist-subnav button.on{ background:var(--surface2); color:var(--text); box-shadow: inset 0 0 0 1px var(--border); }
+
+  .cal-nav{ display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
+  .cal-nav .cal-title{ font-size:16px; font-weight:800; font-family:'Unbounded',sans-serif; text-transform:capitalize; }
+  .cal-nav-btn{ width:34px; height:34px; border-radius:50%; background:var(--surface); border:1px solid var(--border-soft); display:flex; align-items:center; justify-content:center; color:var(--muted); }
+  .cal-nav-btn svg{ width:15px; height:15px; }
+
+  .cal-card{ background:var(--surface); border:1px solid var(--border-soft); border-radius:var(--radius); padding:18px 14px; }
+  .cal-weekdays{ display:grid; grid-template-columns:repeat(7,1fr); margin-bottom:8px; }
+  .cal-weekdays div{ text-align:center; font-size:11px; font-weight:700; color:var(--muted2); text-transform:uppercase; }
+  .cal-grid{ display:grid; grid-template-columns:repeat(7,1fr); gap:6px; }
+  .cal-cell{
+    aspect-ratio:1; border-radius:10px; display:flex; align-items:center; justify-content:center;
+    font-size:12.5px; font-weight:700; color:var(--text); position:relative; background:var(--surface2);
+    border:1px solid transparent;
+  }
+  .cal-cell.empty{ background:transparent; }
+  .cal-cell.nodata{ background:var(--surface2); color:var(--muted2); }
+  .cal-cell.future{ background:transparent; color:var(--muted2); border:1px dashed var(--border); }
+  .cal-cell.is-today{ border:2px solid var(--text); }
+  .cal-cell.selected{ box-shadow:0 0 0 2px var(--text); }
+  .cal-legend{ display:flex; gap:16px; justify-content:center; margin-top:16px; }
+  .cal-legend .li{ display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--muted); font-weight:600; }
+  .cal-legend .sw{ width:10px; height:10px; border-radius:3px; }
+
+  .day-detail{
+    margin-top:14px; background:var(--surface); border:1px solid var(--border-soft); border-radius:16px;
+    padding:14px 16px; display:none;
+  }
+  .day-detail.show{ display:block; }
+  .day-detail .dd-title{ font-size:13.5px; font-weight:800; margin-bottom:10px; text-transform:capitalize; }
+  .day-detail .dd-row{ display:flex; justify-content:space-between; font-size:13px; color:var(--muted); padding:4px 0; }
+  .day-detail .dd-row b{ color:var(--text); font-family:'JetBrains Mono',monospace; font-weight:700; }
+  .dd-edit-btn{
+    width:100%; margin-top:12px; padding:11px; border-radius:12px; background:var(--surface2);
+    border:1px solid var(--border); font-size:13px; font-weight:700; color:var(--text); text-align:center;
+  }
+  .dayedit-summary{ display:flex; gap:8px; }
+  .dayedit-summary .stat-card{ padding:10px; }
+  .dayedit-summary .stat-card .v{ font-size:16px; }
+  .dayedit-summary .stat-card .k{ font-size:10px; }
+
+  .year-scroll{ overflow-x:auto; padding-bottom:6px; }
+  .year-inner{ display:inline-flex; flex-direction:column; gap:4px; min-width:100%; }
+  .year-labels{ display:grid; grid-auto-flow:column; grid-auto-columns:11px; gap:3px; height:12px; }
+  .year-labels span{ grid-row:1; font-size:9.5px; color:var(--muted2); font-weight:700; }
+  .year-grid{ display:grid; grid-auto-flow:column; grid-template-rows:repeat(7,11px); grid-auto-columns:11px; gap:3px; }
+  .year-cell{ width:11px; height:11px; border-radius:3px; background:var(--surface2); }
+  .year-cell.future{ background:transparent; border:1px dashed var(--border-soft); }
+
+  .week-card{
+    background:var(--surface); border:1px solid var(--border-soft); border-radius: var(--radius);
+    padding:20px 16px 14px 16px;
+  }
+  .bars{ display:flex; align-items:flex-end; justify-content:space-between; height:150px; padding: 0 4px; position:relative; }
+  .bars .baseline{ position:absolute; left:0; right:0; bottom:0; height:1px; background:var(--border); }
+  .bar-col{ display:flex; flex-direction:column; align-items:center; gap:8px; width:13%; }
+  .bar-track{ width:100%; height:110px; display:flex; align-items:flex-end; border-radius:8px; overflow:visible; position:relative; }
+  .bar-fill{ width:100%; border-radius:8px; transition: height 0.8s cubic-bezier(.4,0,.2,1); min-height:4px; }
+  .bar-col .dlabel{ font-size:11px; color:var(--muted); font-weight:700; }
+  .bar-col.today .dlabel{ color:var(--text); }
+  .stat-row{ display:flex; gap:10px; margin-top:18px; }
+  .stat-card{ flex:1; min-width:0; background:var(--surface); border:1px solid var(--border-soft); border-radius:16px; padding:14px; }
+  .stat-card .v{ font-size:20px; font-weight:800; font-family:'JetBrains Mono',monospace; }
+  .stat-card .k{ font-size:11.5px; color:var(--muted); font-weight:700; margin-top:4px; }
+
+  /* ---------- profile ---------- */
+  .field{ margin-bottom:16px; min-width:0; }
+  .field label{ display:block; font-size:12.5px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px; }
+  .field-input{
+    background:var(--surface); border:1px solid var(--border-soft); border-radius:14px;
+    padding:14px 16px; font-size:15.5px; font-weight:600; width:100%; min-width:0; box-sizing:border-box;
+  }
+  .seg{ display:flex; background:var(--surface); border:1px solid var(--border-soft); border-radius:14px; padding:4px; gap:4px; min-width:0; }
+  .seg button{ flex:1; min-width:0; padding:10px 4px; border-radius:10px; font-size:13px; font-weight:700; color:var(--muted); text-align:center; }
+  .seg button.on{ background: var(--surface2); color:var(--text); box-shadow: inset 0 0 0 1px var(--border); }
+  .grid2{ display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px; }
+  .primary-btn{
+    width:100%; padding:16px; border-radius:16px; font-size:15px; font-weight:800;
+    background: linear-gradient(120deg, var(--intake), #37B8AC); color:#0A1512; margin-top:6px;
+    box-shadow: 0 8px 24px rgba(79,209,197,0.25);
+  }
+  .tdee-preview{
+    background: linear-gradient(135deg, rgba(79,209,197,0.13), rgba(255,138,98,0.10));
+    border:1px solid var(--border-soft); border-radius:18px; padding:18px; text-align:center; margin: 20px 0;
+  }
+  .tdee-preview .v{ font-size:34px; font-weight:800; font-family:'JetBrains Mono',monospace; }
+  .tdee-preview .k{ font-size:12px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:0.06em; margin-top:4px;}
+
+  /* ---------- modal / sheet ---------- */
+  .overlay{
+    position:fixed; inset:0; background:rgba(8,7,12,0.6); backdrop-filter: blur(2px);
+    display:flex; align-items:flex-end; justify-content:center; z-index:100;
+    opacity:0; pointer-events:none; transition: opacity 0.25s ease;
+  }
+  .overlay.show{ opacity:1; pointer-events:auto; }
+  .sheet{
+    width:100%; max-width:460px; background: #1A1725; border-radius: 26px 26px 0 0;
+    padding: 10px 20px calc(24px + env(safe-area-inset-bottom)) 20px; max-height:86vh; overflow-y:auto;
+    transform: translateY(100%); transition: transform 0.32s cubic-bezier(.32,.72,0,1);
+    border-top:1px solid var(--border-soft);
+  }
+  .overlay.show .sheet{ transform: translateY(0); }
+  .sheet-handle{ width:38px; height:4px; border-radius:4px; background:var(--surface2); margin:6px auto 14px auto; }
+  .sheet h3{ font-size:18px; margin-bottom:16px; }
+  .search-box{
+    display:flex; align-items:center; gap:10px; background:var(--surface); border:1px solid var(--border-soft);
+    border-radius:14px; padding:13px 15px; margin-bottom:10px;
+  }
+  .search-box svg{ width:16px; height:16px; color:var(--muted2); flex-shrink:0; }
+  .search-box input{ flex:1; min-width:0; font-size:15px; font-weight:600; }
+  .suggest-list{ display:flex; flex-direction:column; gap:6px; max-height: 240px; overflow-y:auto; margin-bottom:6px;}
+  .suggest-item{ display:flex; justify-content:space-between; align-items:center; padding:11px 13px; border-radius:12px; background:var(--surface); }
+  .suggest-item .n{ font-size:14px; font-weight:700; }
+  .suggest-item .k{ font-size:12.5px; color:var(--muted); font-family:'JetBrains Mono',monospace; }
+  .online-row{ display:flex; gap:10px; margin-top:6px; }
+  .online-btn{ flex:1; padding:12px; border-radius:14px; background:var(--surface); border:1px solid var(--border-soft); font-size:13px; font-weight:700; text-align:center; display:flex; align-items:center; justify-content:center; gap:6px;}
+  .online-btn svg{ width:14px; height:14px; }
+  .selected-box{ background:var(--surface); border:1px solid var(--border-soft); border-radius:16px; padding:16px; margin-top:14px; }
+  .selected-box .sname{ font-size:15px; font-weight:800; margin-bottom:12px; }
+  .row-inline{ display:flex; gap:12px; align-items:flex-end; }
+  .row-inline .field{ flex:1; min-width:0; margin-bottom:0; }
+  .preview-kcal{ text-align:center; margin: 16px 0 4px 0; }
+  .preview-kcal .v{ font-size:30px; font-weight:800; font-family:'JetBrains Mono',monospace; }
+  .preview-kcal .k{ font-size:11.5px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:0.06em; }
+  .spinner{ width:16px; height:16px; border-radius:50%; border:2px solid rgba(255,255,255,0.2); border-top-color:var(--text); animation: spin 0.7s linear infinite; }
+  @keyframes spin{ to{ transform: rotate(360deg); } }
+  .muted-note{ font-size:12px; color:var(--muted2); text-align:center; margin-top:10px; line-height:1.5; }
+  .close-x{ position:absolute; top:14px; right:16px; width:30px; height:30px; border-radius:50%; background:var(--surface); display:flex; align-items:center; justify-content:center; color:var(--muted); }
+
+  .toast{
+    position:fixed; left:50%; bottom:100px; transform:translateX(-50%) translateY(20px);
+    background:#232030; border:1px solid var(--border); color:var(--text); padding:12px 18px; border-radius:30px;
+    font-size:13px; font-weight:700; z-index:200; opacity:0; transition: all 0.3s ease; pointer-events:none;
+    box-shadow:0 10px 30px rgba(0,0,0,0.4);
+  }
+  .toast.show{ opacity:1; transform:translateX(-50%) translateY(0); }
+
+  ::-webkit-scrollbar{ width:0; height:0; }
+</style>
+</head>
+<body>
+<div id="phone">
+
+  <!-- ============ TODAY ============ -->
+  <div class="view" id="view-today">
+    <div class="topbar">
+      <div>
+        <div class="eyebrow" id="greeting">баланс</div>
+        <h1 id="today-title">Сегодня</h1>
+      </div>
+      <div class="date" id="today-date"></div>
+    </div>
+
+    <div class="ring-wrap">
+      <svg viewBox="0 0 220 220">
+        <defs>
+          <linearGradient id="gradGood" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#4FD1C5"/>
+            <stop offset="100%" stop-color="#37B8AC"/>
+          </linearGradient>
+          <linearGradient id="gradWarn" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#4FD1C5"/>
+            <stop offset="100%" stop-color="#FF8A62"/>
+          </linearGradient>
+          <linearGradient id="gradOver" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#FF8A62"/>
+            <stop offset="100%" stop-color="#FF5C7A"/>
+          </linearGradient>
+        </defs>
+        <circle class="ring-track" cx="110" cy="110" r="94"/>
+        <circle class="ring-fg" id="ring-fg" cx="110" cy="110" r="94"/>
+      </svg>
+      <div class="ring-center">
+        <div class="big num" id="ring-big">0</div>
+        <div class="lbl" id="ring-lbl">осталось ккал</div>
+        <div class="status" id="ring-status">Загрузка…</div>
+      </div>
+    </div>
+
+    <div class="chips">
+      <div class="chip"><div class="k"><span class="dot" style="background:var(--muted2)"></span>Бюджет</div><div class="v" id="chip-budget">0</div></div>
+      <div class="chip"><div class="k"><span class="dot" style="background:var(--intake)"></span>Съедено</div><div class="v" id="chip-eaten">0</div></div>
+      <div class="chip"><div class="k"><span class="dot" style="background:var(--burn)"></span>Сожжено</div><div class="v" id="chip-burned">0</div></div>
+    </div>
+
+    <div class="pedo-card">
+      <div class="pedo-top">
+        <div class="pedo-icon">👟</div>
+        <div class="pedo-main">
+          <div class="pedo-steps"><span class="num" id="pedo-steps">0</span><span class="pedo-steps-lbl">шагов</span></div>
+          <div class="pedo-sub">
+            <span id="pedo-distance">0.0 км</span>
+            <span class="pedo-sep">·</span>
+            <span id="pedo-kcal">0 ккал</span>
+          </div>
+        </div>
+        <button class="pedo-toggle" id="pedo-toggle" onclick="togglePedometer()">
+          <span class="pedo-dot" id="pedo-dot"></span>
+          <span id="pedo-toggle-lbl">Запустить</span>
+        </button>
+      </div>
+      <div class="pedo-note" id="pedo-note">Считает шаги, пока приложение открыто на экране. Полный фоновый подсчёт недоступен веб-приложениям на Android.</div>
+    </div>
+
+    <div class="sec-head">
+      <h2>Еда</h2>
+      <button class="add-btn food" onclick="addTargetMode='today'; openFoodModal()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Добавить
+      </button>
+    </div>
+    <div class="entry-list" id="food-list"></div>
+
+    <div class="sec-head">
+      <h2>Тренировки</h2>
+      <button class="add-btn workout" onclick="addTargetMode='today'; openWorkoutModal()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Добавить
+      </button>
+    </div>
+    <div class="entry-list" id="workout-list"></div>
+  </div>
+
+  <!-- ============ HISTORY ============ -->
+  <div class="view" id="view-history" hidden>
+    <div class="topbar">
+      <div>
+        <div class="eyebrow" id="hist-eyebrow">неделя</div>
+        <h1>История</h1>
+      </div>
+    </div>
+
+    <div class="hist-subnav">
+      <button id="hsub-week" class="on" onclick="setHistorySubtab('week')">Неделя</button>
+      <button id="hsub-month" onclick="setHistorySubtab('month')">Месяц</button>
+      <button id="hsub-year" onclick="setHistorySubtab('year')">Год</button>
+    </div>
+
+    <!-- week -->
+    <div id="hist-week-view">
+      <div class="week-card">
+        <div class="bars" id="week-bars">
+          <div class="baseline"></div>
+        </div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-card"><div class="v" id="hist-avg">0</div><div class="k">Средний баланс</div></div>
+        <div class="stat-card"><div class="v" id="hist-days-ok">0/7</div><div class="k">Дней в бюджете</div></div>
+      </div>
+    </div>
+
+    <!-- month -->
+    <div id="hist-month-view" style="display:none;">
+      <div class="cal-nav">
+        <button class="cal-nav-btn" onclick="shiftMonth(-1)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        <div class="cal-title" id="cal-month-title">—</div>
+        <button class="cal-nav-btn" onclick="shiftMonth(1)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>
+        </button>
+      </div>
+      <div class="cal-card">
+        <div class="cal-weekdays"><div>Пн</div><div>Вт</div><div>Ср</div><div>Чт</div><div>Пт</div><div>Сб</div><div>Вс</div></div>
+        <div class="cal-grid" id="cal-grid"></div>
+        <div class="cal-legend">
+          <div class="li"><span class="sw" style="background:var(--good);"></span>Экономия</div>
+          <div class="li"><span class="sw" style="background:var(--over);"></span>Перебор</div>
+          <div class="li"><span class="sw" style="background:var(--surface2); border:1px solid var(--border);"></span>Нет данных</div>
+        </div>
+      </div>
+      <div class="day-detail" id="day-detail"></div>
+    </div>
+
+    <!-- year -->
+    <div id="hist-year-view" style="display:none;">
+      <div class="cal-nav">
+        <button class="cal-nav-btn" onclick="shiftYear(-1)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        <div class="cal-title" id="cal-year-title">—</div>
+        <button class="cal-nav-btn" onclick="shiftYear(1)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>
+        </button>
+      </div>
+      <div class="cal-card">
+        <div class="year-scroll">
+          <div class="year-inner">
+            <div class="year-labels" id="year-labels"></div>
+            <div class="year-grid" id="year-grid"></div>
+          </div>
+        </div>
+        <div class="cal-legend">
+          <div class="li"><span class="sw" style="background:var(--good);"></span>Экономия</div>
+          <div class="li"><span class="sw" style="background:var(--over);"></span>Перебор</div>
+        </div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-card"><div class="v" id="year-avg">0</div><div class="k">Средний баланс за год</div></div>
+        <div class="stat-card"><div class="v" id="year-days-ok">0</div><div class="k">Дней в бюджете</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ PROFILE ============ -->
+  <div class="view" id="view-profile" hidden>
+    <div class="topbar">
+      <div>
+        <div class="eyebrow">настройки</div>
+        <h1>Профиль</h1>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Пол</label>
+      <div class="seg">
+        <button id="seg-m" onclick="setGender('m')">Мужчина</button>
+        <button id="seg-f" onclick="setGender('f')">Женщина</button>
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div class="field">
+        <label>Возраст, лет</label>
+        <div class="field-input"><input id="in-age" type="number" inputmode="numeric" placeholder="28"></div>
+      </div>
+      <div class="field">
+        <label>Вес, кг</label>
+        <div class="field-input"><input id="in-weight" type="number" inputmode="decimal" placeholder="70"></div>
+      </div>
+    </div>
+    <div class="field">
+      <label>Рост, см</label>
+      <div class="field-input"><input id="in-height" type="number" inputmode="numeric" placeholder="175"></div>
+    </div>
+
+    <div class="field">
+      <label>Активность в течение дня</label>
+      <div class="seg" style="flex-wrap:wrap;">
+        <button id="seg-a1" onclick="setActivity(1.2)" style="flex:1 1 30%;">Минимум</button>
+        <button id="seg-a2" onclick="setActivity(1.375)" style="flex:1 1 30%;">1–3 трен/нед</button>
+        <button id="seg-a3" onclick="setActivity(1.55)" style="flex:1 1 30%;">3–5 трен/нед</button>
+        <button id="seg-a4" onclick="setActivity(1.725)" style="flex:1 1 30%; margin-top:4px;">6–7 трен/нед</button>
+        <button id="seg-a5" onclick="setActivity(1.9)" style="flex:1 1 30%; margin-top:4px;">Физ. труд</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Цель</label>
+      <div class="seg">
+        <button id="seg-lose" onclick="setGoal('lose')">Похудение</button>
+        <button id="seg-maintain" onclick="setGoal('maintain')">Баланс</button>
+        <button id="seg-gain" onclick="setGoal('gain')">Набор массы</button>
+      </div>
+    </div>
+
+    <div class="tdee-preview">
+      <div class="v num" id="profile-tdee-preview">—</div>
+      <div class="k">дневной бюджет калорий (TDEE с учётом цели)</div>
+    </div>
+
+    <button class="primary-btn" onclick="saveProfile()">Сохранить профиль</button>
+    <p class="muted-note">Расчёт по формуле Миффлина–Сан Жеора. Бюджет — ориентир: слушай своё тело и корректируй при необходимости.</p>
+  </div>
+
+  <!-- ============ NAV ============ -->
+  <div class="navbar" id="navbar">
+    <button class="navbtn active" data-tab="today" onclick="switchView('today')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+      <span>Сегодня</span>
+    </button>
+    <button class="navbtn" data-tab="history" onclick="switchView('history')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V9M10 19V4M16 19v-7M22 19H2"/></svg>
+      <span>История</span>
+    </button>
+    <button class="navbtn" data-tab="profile" onclick="switchView('profile')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg>
+      <span>Профиль</span>
+    </button>
+  </div>
+
+  <!-- ============ FOOD MODAL ============ -->
+  <div class="overlay" id="overlay-food" onclick="if(event.target===this) closeFoodModal()">
+    <div class="sheet">
+      <div class="close-x" onclick="closeFoodModal()">✕</div>
+      <div class="sheet-handle"></div>
+      <h3 id="food-modal-title">Добавить еду</h3>
+      <div class="search-box">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+        <input id="food-search" placeholder="Например: куриная грудка" oninput="onFoodSearch()">
+      </div>
+      <div class="suggest-list" id="food-suggest"></div>
+      <div id="food-online-row" class="online-row" style="display:none;">
+        <button class="online-btn" id="btn-search-online" onclick="searchFoodOnlineHandler()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+          Искать в интернете
+        </button>
+        <button class="online-btn" onclick="manualFoodEntry()">Указать вручную</button>
+      </div>
+
+      <div class="selected-box" id="food-selected" style="display:none;">
+        <div class="sname" id="food-selected-name">—</div>
+        <div class="row-inline">
+          <div class="field">
+            <label>Ккал / 100г</label>
+            <div class="field-input"><input id="food-kcal100" type="number" inputmode="decimal" oninput="updateFoodPreview()"></div>
+          </div>
+          <div class="field">
+            <label>Граммы</label>
+            <div class="field-input"><input id="food-grams" type="number" inputmode="numeric" value="100" oninput="updateFoodPreview()"></div>
+          </div>
+        </div>
+        <div class="preview-kcal">
+          <div class="v num" id="food-preview-kcal">0</div>
+          <div class="k">ккал в этой порции</div>
+        </div>
+        <button class="primary-btn" onclick="confirmAddFood()">Добавить в дневник</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ WORKOUT MODAL ============ -->
+  <div class="overlay" id="overlay-workout" onclick="if(event.target===this) closeWorkoutModal()">
+    <div class="sheet">
+      <div class="close-x" onclick="closeWorkoutModal()">✕</div>
+      <div class="sheet-handle"></div>
+      <h3 id="workout-modal-title">Добавить тренировку</h3>
+      <div class="search-box">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+        <input id="workout-search" placeholder="Например: бег" oninput="onWorkoutSearch()">
+      </div>
+      <div class="suggest-list" id="workout-suggest"></div>
+      <div class="online-row">
+        <button class="online-btn" onclick="manualWorkoutEntry()">Своя активность (ввести ккал вручную)</button>
+      </div>
+
+      <div class="selected-box" id="workout-selected" style="display:none;">
+        <div class="sname" id="workout-selected-name">—</div>
+        <div id="workout-met-row" class="row-inline">
+          <div class="field">
+            <label>Минут</label>
+            <div class="field-input"><input id="workout-minutes" type="number" inputmode="numeric" value="30" oninput="updateWorkoutPreview()"></div>
+          </div>
+        </div>
+        <div id="workout-manual-row" class="row-inline" style="display:none; margin-top:12px;">
+          <div class="field">
+            <label>Сожжено ккал</label>
+            <div class="field-input"><input id="workout-manual-kcal" type="number" inputmode="numeric" oninput="updateWorkoutPreview()"></div>
+          </div>
+        </div>
+        <div class="preview-kcal">
+          <div class="v num" id="workout-preview-kcal">0</div>
+          <div class="k">сожжено ккал</div>
+        </div>
+        <button class="primary-btn" onclick="confirmAddWorkout()">Добавить в дневник</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ DAY EDITOR (edit/backfill a past day) ============ -->
+  <div class="overlay" id="overlay-dayedit" onclick="if(event.target===this) closeDayEditor()">
+    <div class="sheet" style="max-height:92vh;">
+      <div class="close-x" onclick="closeDayEditor()">✕</div>
+      <div class="sheet-handle"></div>
+      <h3 id="dayedit-title">Редактирование дня</h3>
+
+      <div class="dayedit-summary" id="dayedit-summary"></div>
+
+      <div class="field" style="margin-top:16px;">
+        <label>Шаги (можно скорректировать вручную)</label>
+        <div class="field-input"><input id="dayedit-steps-input" type="number" inputmode="numeric" min="0" onchange="updateDayEditorSteps()"></div>
+      </div>
+
+      <div class="sec-head" style="margin-top:18px;">
+        <h2>Еда</h2>
+        <button class="add-btn food" onclick="addTargetMode='dayeditor'; openFoodModal()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Добавить
+        </button>
+      </div>
+      <div class="entry-list" id="dayedit-food-list"></div>
+
+      <div class="sec-head">
+        <h2>Тренировки</h2>
+        <button class="add-btn workout" onclick="addTargetMode='dayeditor'; openWorkoutModal()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Добавить
+        </button>
+      </div>
+      <div class="entry-list" id="dayedit-workout-list" style="margin-bottom:8px;"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

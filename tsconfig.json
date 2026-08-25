@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ES2020",
+    "moduleResolution": "bundler",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "rootDir": "src",
+    "outDir": "www",
+    "sourceMap": true,
+    "removeComments": false,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "noFallthroughCasesInSwitch": true,
+
+    // Deliberately lenient for this first pass: the app started life as one inline <script>,
+    // so the aim is "compiles clean and catches typos / bad property names", not full
+    // annotation. Tighten one flag at a time as the code gets typed:
+    //   "strict": true  →  turns on noImplicitAny + strictNullChecks + the rest at once.
+    "strict": false,
+    "noImplicitAny": false,
+    "strictNullChecks": false
+  },
+  "include": ["src/**/*.ts"]
+}

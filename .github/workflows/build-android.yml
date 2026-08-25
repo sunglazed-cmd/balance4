@@ -1,0 +1,61 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install npm dependencies
+        run: npm install
+
+      # Fails the run on a real type error before anything slow happens, so a typo in
+      # src/app.ts is reported in ~20 seconds instead of surviving into the APK.
+      - name: Type-check TypeScript
+        run: npm run typecheck
+
+      - name: Compile TypeScript (src/app.ts -> www/app.js)
+        run: npm run build
+
+      # Capacitor 8's generated capacitor.build.gradle asks for Java 21 source/target
+      # compatibility, so anything older here fails at the compile step.
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Sync Capacitor (copies www/ into the native android project)
+        run: npx cap sync android
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x android/gradlew
+
+      - name: Build debug APK
+        run: cd android && ./gradlew assembleDebug --stacktrace
+
+      - name: Upload APK as a downloadable artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: balance-app-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload full build log (even on failure) for debugging
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-build-log
+          path: android/app/build/outputs/logs/**
+          if-no-files-found: ignore

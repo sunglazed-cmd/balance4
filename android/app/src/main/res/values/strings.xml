@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Баланс</string>
+    <string name="title_activity_main">Баланс</string>
+    <string name="package_name">com.balance.calorietracker</string>
+    <string name="custom_url_scheme">com.balance.calorietracker</string>
+</resources>

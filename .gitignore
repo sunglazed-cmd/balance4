@@ -1,0 +1,11 @@
+node_modules/
+
+# www/app.js and www/app.js.map are BUILD OUTPUT (tsc compiles src/app.ts into them) but are
+# deliberately committed: Capacitor copies www/ into the APK as-is, so a checkout that has not
+# been built yet would otherwise produce an app with a blank screen.
+# Regenerate with: npm run build
+
+android/app/build/
+android/build/
+android/.gradle/
+android/local.properties
