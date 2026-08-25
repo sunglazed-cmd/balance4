@@ -1114,42 +1114,125 @@ function updateFoodPreview(){
   el('food-preview-kcal').textContent = fmt(k100*g/100);
 }
 
+/* ===================== ПОИСК ПРОДУКТА В ИНТЕРНЕТЕ =====================
+   Два источника, в порядке полезности для русской еды:
+
+   1. calorizator.ru — их собственная таблица калорийности. Публичного API нет, но
+      анализатор рецептов на сайте ходит в /widgets/c_ac.php и получает готовый JSON
+      вида [{v: название, d: ккал на 100 г}]. Две особенности, выясненные опытом:
+      кириллицу этот скрипт понимает только сырым UTF-8 в теле (процентное
+      кодирование даёт пустой ответ), а CORS-заголовков он не отдаёт вовсе — значит
+      запрос должен идти нативно, плагином CapacitorHttp, мимо правил браузера.
+      Поэтому источник работает только в собранном приложении.
+
+   2. Open Food Facts — открытая база с обычным API и CORS. Работает и в браузере,
+      но там в основном магазинные товары с этикеток, а не «творог 5%». Запасной. */
+
+const CALORIZATOR_URL = 'https://calorizator.ru/widgets/c_ac.php';
+const OFF_SEARCH_URL = 'https://world.openfoodfacts.org/cgi/search.pl';
+const ONLINE_MAX_RESULTS = 7;
+
+/** Найденный продукт, уже приведённый к нужному виду. */
+interface OnlineFood {
+  name: string;
+  kcal100g: number;
+  note: string;    // марка или иная подсказка, показывается рядом с калорийностью
+}
+
+function isNativeApp(): boolean {
+  return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+}
+
+async function searchCalorizator(query: string): Promise<OnlineFood[]> {
+  const http = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.CapacitorHttp;
+  if(!http) throw new Error('нативный HTTP недоступен');
+  const resp = await http.request({
+    url: CALORIZATOR_URL,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    // Строкой, а не объектом: объект нативная часть закодирует процентами, и поиск
+    // по кириллице вернёт пустоту.
+    data: 'value=' + query
+  });
+  const raw = typeof resp.data === 'string' ? JSON.parse(resp.data || '[]') : (resp.data || []);
+  if(!Array.isArray(raw)) return [];
+  const out: OnlineFood[] = [];
+  for(const item of raw){
+    const name = String(item.v || '').trim();
+    const kcal = Math.round(Number(item.d));
+    if(!name || !isFinite(kcal) || kcal <= 0 || kcal > 900) continue;
+    out.push({ name, kcal100g: kcal, note: 'calorizator.ru' });
+    if(out.length >= ONLINE_MAX_RESULTS) break;
+  }
+  return out;
+}
+
+async function searchOpenFoodFacts(query: string): Promise<OnlineFood[]> {
+  const url = OFF_SEARCH_URL + '?search_terms=' + encodeURIComponent(query) +
+    '&search_simple=1&action=process&json=1&page_size=24' +
+    '&fields=product_name,product_name_ru,brands,nutriments';
+  const resp = await fetch(url);
+  if(!resp.ok) throw new Error('HTTP ' + resp.status);
+  const data = await resp.json();
+  const seen = new Set<string>();
+  const out: OnlineFood[] = [];
+  for(const product of data.products || []){
+    const name = String(product.product_name_ru || product.product_name || '').trim();
+    const kcal = Math.round(Number(product.nutriments && product.nutriments['energy-kcal_100g']));
+    // В открытой базе хватает записей без названия и с мусорными числами.
+    if(!name || !isFinite(kcal) || kcal <= 0 || kcal > 900) continue;
+    const key = name.toLowerCase() + '|' + kcal;
+    if(seen.has(key)) continue;
+    seen.add(key);
+    const brand = String(product.brands || '').split(',')[0].trim();
+    out.push({ name, kcal100g: kcal, note: brand || 'Open Food Facts' });
+    if(out.length >= ONLINE_MAX_RESULTS) break;
+  }
+  return out;
+}
+
+/** Пробуем источники по очереди: первый, который что-то нашёл, и выигрывает. */
+async function searchFoodEverywhere(query: string): Promise<OnlineFood[]> {
+  const sources: Array<() => Promise<OnlineFood[]>> = isNativeApp()
+    ? [() => searchCalorizator(query), () => searchOpenFoodFacts(query)]
+    : [() => searchOpenFoodFacts(query)];
+  let lastError: unknown = null;
+  for(const source of sources){
+    try{
+      const found = await source();
+      if(found.length > 0) return found;
+    }catch(e){
+      lastError = e;
+      console.warn('источник поиска не ответил', e);
+    }
+  }
+  if(lastError) throw lastError;
+  return [];
+}
+
 async function searchFoodOnlineHandler(){
   const q = el('food-search').value.trim();
-  if(!q) return;
+  if(!q){ showToast('Сначала введите название продукта'); return; }
   const btn = el('btn-search-online');
   const origHtml = btn.innerHTML;
   btn.innerHTML = '<div class="spinner"></div> Ищу…';
   try{
-    const resp = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 1000,
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
-        messages: [{
-          role: "user",
-          content: `Найди в интернете калорийность продукта "${q}" (ккал на 100 грамм, для сырого/стандартного вида продукта, если не указано иное). В самом конце ответа выведи ТОЛЬКО одну строку в формате чистого JSON без markdown-разметки и без пояснений: {"name":"нормализованное короткое название на русском","kcal100g":число}`
-        }]
-      })
-    });
-    const data = await resp.json();
-    const textBlocks = (data.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
-    const match = textBlocks.match(/\{[^{}]*"kcal100g"[^{}]*\}/);
-    if(!match) throw new Error('no json found');
-    const parsed = JSON.parse(match[0]);
-    if(!parsed.kcal100g || isNaN(parsed.kcal100g)) throw new Error('bad value');
-    selectFood(parsed.name || q, Math.round(parsed.kcal100g));
-    const exists = customFoods.some(f=>f.name.toLowerCase()===(parsed.name||q).toLowerCase());
-    if(!exists){
-      customFoods.push({name: parsed.name || q, kcal100g: Math.round(parsed.kcal100g)});
-      await storeSet('custom_foods', customFoods);
+    const found = await searchFoodEverywhere(q);
+    if(found.length === 0){
+      showToast('Ничего не нашлось — введите калорийность вручную');
+      manualFoodEntry();
+      return;
     }
-    showToast('Найдено в интернете');
+    // Выбор оставляем за человеком: на один запрос приходит несколько вариантов
+    // с разной жирностью и разной калорийностью.
+    el('food-suggest').innerHTML = '<div class="suggest-head">Найдено в интернете</div>' + found.map(f => `
+      <div class="suggest-item" onclick='selectFood(${JSON.stringify(f.name)}, ${f.kcal100g})'>
+        <div class="n">${escapeHtml(f.name)}</div>
+        <div class="k">${f.kcal100g} ккал/100г · ${escapeHtml(f.note)}</div>
+      </div>`).join('');
   }catch(e){
     console.error(e);
-    showToast('Не удалось найти онлайн, введите вручную');
+    showToast('Нет связи с базой продуктов — введите калорийность вручную');
     manualFoodEntry();
   }finally{
     btn.innerHTML = origHtml;

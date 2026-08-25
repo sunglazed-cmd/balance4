@@ -1,4 +1,4 @@
-const CACHE_NAME = 'balance-cache-v3';
+const CACHE_NAME = 'balance-cache-v4';
 const ASSETS = [
   './',
   './index.html',
@@ -30,8 +30,8 @@ self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
 
-  // Network-first for Anthropic API calls (online food search) - never cache those.
-  if (req.url.includes('api.anthropic.com')) return;
+  // Поиск продуктов всегда идёт в сеть — кэшировать его нечего.
+  if (req.url.includes('openfoodfacts.org') || req.url.includes('calorizator.ru')) return;
 
   event.respondWith(
     caches.match(req).then((cached) => {

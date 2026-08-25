@@ -22,12 +22,27 @@ interface PedometerPlugin {
   requestPermissions(): Promise<{ granted: boolean }>;
 }
 
+/** Встроенный плагин Capacitor: HTTP-запрос выполняет нативная часть, поэтому на него
+ *  не распространяются CORS-правила WebView. */
+interface CapacitorHttpPlugin {
+  request(options: {
+    url: string;
+    method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+    headers?: Record<string, string>;
+    params?: Record<string, string>;
+    /** Строка уходит в тело как есть; объект нативная часть кодирует сама. */
+    data?: unknown;
+    connectTimeout?: number;
+    readTimeout?: number;
+  }): Promise<{ status: number; data: unknown; headers: Record<string, string>; url: string }>;
+}
+
 declare global {
   interface Window {
     Capacitor?: {
       isNativePlatform?: () => boolean;
       getPlatform?: () => string;
-      Plugins?: { Pedometer?: PedometerPlugin } & Record<string, unknown>;
+      Plugins?: { Pedometer?: PedometerPlugin; CapacitorHttp?: CapacitorHttpPlugin } & Record<string, unknown>;
     };
   }
 }
