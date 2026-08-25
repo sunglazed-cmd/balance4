@@ -115,6 +115,8 @@ async function switchView(tab) {
     el('view-' + tab).hidden = false;
     el('view-' + tab).scrollTop = 0; // у каждой вкладки теперь свой скролл — открываем её сверху
     document.querySelectorAll('.navbtn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+    if (tab === 'today')
+        renderToday();
     if (tab === 'history')
         renderHistorySubtab();
     if (tab === 'profile')
@@ -961,6 +963,8 @@ function renderWorkoutHistory() {
 /* ===================== FOOD MODAL ===================== */
 function openFoodModal() {
     editingFoodId = null;
+    el('food-modal-title').textContent = 'Добавить еду';
+    el('overlay-food').classList.add('show');
     el('food-search').value = '';
     renderFoodHistory();
     el('food-online-row').style.display = 'none';
@@ -1254,6 +1258,35 @@ async function confirmAddWorkout() {
     closeWorkoutModal();
     showToast('Сохранено: ' + name);
 }
+/* ===================== ЭКРАННАЯ КЛАВИАТУРА =====================
+   Android не всегда уменьшает WebView, когда открывается клавиатура: разметка остаётся
+   прежней высоты, и всё, что приклеено к нижнему краю (наши модалки), уезжает под неё.
+   visualViewport знает реальную видимую область — из разницы получаем высоту клавиатуры
+   и отдаём её CSS переменной --kb. */
+function trackKeyboardInset() {
+    const vv = window.visualViewport;
+    if (!vv)
+        return;
+    const apply = () => {
+        const hidden = Math.max(0, window.innerHeight - (vv.height + vv.offsetTop));
+        document.documentElement.style.setProperty('--kb', Math.round(hidden) + 'px');
+    };
+    vv.addEventListener('resize', apply);
+    vv.addEventListener('scroll', apply);
+    apply();
+}
+/** Поле, на которое встал фокус, подтягиваем в видимую часть листа. */
+function keepFocusedFieldVisible() {
+    document.addEventListener('focusin', (e) => {
+        const target = e.target;
+        if (!target || (target.tagName !== 'INPUT' && target.tagName !== 'TEXTAREA'))
+            return;
+        setTimeout(() => {
+            if (target.scrollIntoView)
+                target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }, 350); // ждём, пока клавиатура доедет и --kb станет актуальной
+    });
+}
 /* ===================== INIT ===================== */
 async function init() {
     profile = await storeGet('profile');
@@ -1295,6 +1328,8 @@ async function init() {
         else if (pedoUnsavedSteps > 0)
             pedoFlush();
     });
+    trackKeyboardInset();
+    keepFocusedFieldVisible();
     window.addEventListener('focus', checkDayRollover);
     window.addEventListener('pagehide', () => { if (pedoUnsavedSteps > 0)
         pedoFlush(); });

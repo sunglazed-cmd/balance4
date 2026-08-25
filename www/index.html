@@ -326,12 +326,15 @@
   .overlay{
     position:fixed; inset:0; background:rgba(8,7,12,0.6); backdrop-filter: blur(2px);
     display:flex; align-items:flex-end; justify-content:center; z-index:100;
+    /* --kb — высота клавиатуры, её выставляет trackKeyboardInset() */
+    padding-bottom: var(--kb, 0px);
     opacity:0; pointer-events:none; transition: opacity 0.25s ease;
   }
   .overlay.show{ opacity:1; pointer-events:auto; }
   .sheet{
     width:100%; max-width:460px; background: #1A1725; border-radius: 26px 26px 0 0;
-    padding: 10px 20px calc(24px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))) 20px; max-height:86vh; overflow-y:auto;
+    padding: 10px 20px calc(24px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))) 20px;
+    max-height: calc(86vh - var(--kb, 0px)); overflow-y:auto;
     transform: translateY(100%); transition: transform 0.32s cubic-bezier(.32,.72,0,1);
     border-top:1px solid var(--border-soft);
   }
@@ -697,7 +700,7 @@
 
   <!-- ============ DAY EDITOR (edit/backfill a past day) ============ -->
   <div class="overlay" id="overlay-dayedit" onclick="if(event.target===this) closeDayEditor()">
-    <div class="sheet" style="max-height:92vh;">
+    <div class="sheet" style="max-height: calc(92vh - var(--kb, 0px));">
       <div class="close-x" onclick="closeDayEditor()">✕</div>
       <div class="sheet-handle"></div>
       <h3 id="dayedit-title">Редактирование дня</h3>
