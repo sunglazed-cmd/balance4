@@ -1184,10 +1184,24 @@ async function init() {
     setInterval(checkDayRollover, 60 * 1000);
 }
 init();
+/* The service worker exists for the browser/PWA version, where it makes the app work
+   offline. Inside the native app it is not just useless but harmful: the assets are already
+   local, and its cache-first strategy survives an app update, so a freshly installed APK would
+   keep serving the previous build's index.html and app.js. So: register it in the browser,
+   and actively tear down any worker left over from a browser session inside the shell. */
 if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-        navigator.serviceWorker.register('service-worker.js').catch(e => console.warn('SW registration failed', e));
-    });
+    if (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()) {
+        navigator.serviceWorker.getRegistrations()
+            .then(regs => regs.forEach(r => r.unregister()))
+            .then(() => caches.keys())
+            .then(keys => Promise.all(keys.map(k => caches.delete(k))))
+            .catch(() => { });
+    }
+    else {
+        window.addEventListener('load', () => {
+            navigator.serviceWorker.register('service-worker.js').catch(e => console.warn('SW registration failed', e));
+        });
+    }
 }
 /* ===================== GLOBAL HANDLER EXPORTS =====================
    index.html wires its buttons with inline handlers (onclick="openFoodModal()"),

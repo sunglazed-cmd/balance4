@@ -115,7 +115,10 @@
   .topbar h1{font-size:22px;}
   .topbar .date{font-size:13px; color:var(--muted); font-weight:600;}
 
-  .view{ padding: 4px 20px 110px 20px; flex:1; min-width:0; }
+  .view{
+    padding: calc(4px + var(--safe-area-inset-top, 0px)) 20px calc(110px + var(--safe-area-inset-bottom, 0px)) 20px;
+    flex:1; min-width:0;
+  }
   .view[hidden]{display:none;}
 
   /* ---------- ring ---------- */
@@ -212,7 +215,7 @@
     background: rgba(20,17,28,0.82);
     backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
     border-top:1px solid var(--border-soft);
-    display:flex; padding: 8px 10px calc(10px + env(safe-area-inset-bottom)) 10px;
+    display:flex; padding: 8px 10px calc(10px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))) 10px;
     z-index:40;
   }
   .navbtn{ flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; padding:6px 0; color:var(--muted2); }
@@ -321,7 +324,7 @@
   .overlay.show{ opacity:1; pointer-events:auto; }
   .sheet{
     width:100%; max-width:460px; background: #1A1725; border-radius: 26px 26px 0 0;
-    padding: 10px 20px calc(24px + env(safe-area-inset-bottom)) 20px; max-height:86vh; overflow-y:auto;
+    padding: 10px 20px calc(24px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))) 20px; max-height:86vh; overflow-y:auto;
     transform: translateY(100%); transition: transform 0.32s cubic-bezier(.32,.72,0,1);
     border-top:1px solid var(--border-soft);
   }
