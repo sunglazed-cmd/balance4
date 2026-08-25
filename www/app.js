@@ -1050,11 +1050,22 @@ function updateFoodPreview() {
       запрос должен идти нативно, плагином CapacitorHttp, мимо правил браузера.
       Поэтому источник работает только в собранном приложении.
 
-   2. Open Food Facts — открытая база с обычным API и CORS. Работает и в браузере,
+   2. Open Food Facts — открытая база с обычным API и CORS (поисковый сервис
+      search.openfoodfacts.org: старый cgi/search.pl под нагрузкой отдаёт 503 HTML-ом).
+      Работает и в браузере,
       но там в основном магазинные товары с этикеток, а не «творог 5%». Запасной. */
 const CALORIZATOR_URL = 'https://calorizator.ru/widgets/c_ac.php';
-const OFF_SEARCH_URL = 'https://world.openfoodfacts.org/cgi/search.pl';
+const OFF_SEARCH_URL = 'https://search.openfoodfacts.org/search'; // без CORS — только нативно
+const OFF_LEGACY_URL = 'https://world.openfoodfacts.org/cgi/search.pl'; // с CORS, но под нагрузкой отдаёт 503
 const ONLINE_MAX_RESULTS = 7;
+const ONLINE_TIMEOUT_MS = 12000;
+/** Открытые базы отдают названия уже с HTML-сущностями («Монарх &quot;Латте&quot;»).
+ *  Если не раскодировать, при выводе они экранируются второй раз и видны как есть. */
+function decodeEntities(text) {
+    const box = document.createElement('textarea');
+    box.innerHTML = text;
+    return box.value;
+}
 function isNativeApp() {
     return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
 }
@@ -1065,6 +1076,8 @@ async function searchCalorizator(query) {
     const resp = await http.request({
         url: CALORIZATOR_URL,
         method: 'POST',
+        connectTimeout: ONLINE_TIMEOUT_MS,
+        readTimeout: ONLINE_TIMEOUT_MS,
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         // Строкой, а не объектом: объект нативная часть закодирует процентами, и поиск
         // по кириллице вернёт пустоту.
@@ -1075,7 +1088,7 @@ async function searchCalorizator(query) {
         return [];
     const out = [];
     for (const item of raw) {
-        const name = String(item.v || '').trim();
+        const name = decodeEntities(String(item.v || '')).trim();
         const kcal = Math.round(Number(item.d));
         if (!name || !isFinite(kcal) || kcal <= 0 || kcal > 900)
             continue;
@@ -1085,19 +1098,58 @@ async function searchCalorizator(query) {
     }
     return out;
 }
+/**
+ * GET, возвращающий JSON. Внутри приложения запрос делает нативная часть — ей не мешают
+ * ни CORS, ни то, что у поискового сервиса Open Food Facts нужных заголовков нет вовсе.
+ * В браузере остаётся обычный fetch, поэтому там адрес другой — тот, что CORS отдаёт.
+ */
+async function httpGetJson(url) {
+    const http = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.CapacitorHttp;
+    let status;
+    let body;
+    if (http) {
+        const resp = await http.request({
+            url,
+            method: 'GET',
+            connectTimeout: ONLINE_TIMEOUT_MS,
+            readTimeout: ONLINE_TIMEOUT_MS
+        });
+        status = resp.status;
+        body = resp.data;
+    }
+    else {
+        const resp = await fetch(url, { signal: AbortSignal.timeout(ONLINE_TIMEOUT_MS) });
+        status = resp.status;
+        body = await resp.text();
+    }
+    if (status < 200 || status >= 300)
+        throw new Error('база ответила ' + status);
+    if (typeof body !== 'string')
+        return (body || {});
+    try {
+        return JSON.parse(body);
+    }
+    catch {
+        // Под нагрузкой обе стороны Open Food Facts отдают HTML-страницу с ошибкой,
+        // и стандартное сообщение про «<» вместо JSON ничего человеку не объясняет.
+        throw new Error('база вернула не JSON (перегрузка или лимит запросов)');
+    }
+}
 async function searchOpenFoodFacts(query) {
-    const url = OFF_SEARCH_URL + '?search_terms=' + encodeURIComponent(query) +
-        '&search_simple=1&action=process&json=1&page_size=24' +
-        '&fields=product_name,product_name_ru,brands,nutriments';
-    const resp = await fetch(url);
-    if (!resp.ok)
-        throw new Error('HTTP ' + resp.status);
-    const data = await resp.json();
+    const url = isNativeApp()
+        ? OFF_SEARCH_URL + '?q=' + encodeURIComponent(query) +
+            '&page_size=24&fields=product_name,product_name_ru,brands,nutriments'
+        : OFF_LEGACY_URL + '?search_terms=' + encodeURIComponent(query) +
+            '&search_simple=1&action=process&json=1&page_size=24' +
+            '&fields=product_name,product_name_ru,brands,nutriments';
+    const data = await httpGetJson(url);
+    // Поисковый сервис отдаёт hits, старый CGI — products; поля внутри те же.
+    const list = (data.hits || data.products || []);
     const seen = new Set();
     const out = [];
-    for (const product of data.products || []) {
-        const name = String(product.product_name_ru || product.product_name || '').trim();
-        const kcal = Math.round(Number(product.nutriments && product.nutriments['energy-kcal_100g']));
+    for (const item of list) {
+        const name = decodeEntities(String(item.product_name_ru || item.product_name || '')).trim();
+        const kcal = Math.round(Number(item.nutriments && item.nutriments['energy-kcal_100g']));
         // В открытой базе хватает записей без названия и с мусорными числами.
         if (!name || !isFinite(kcal) || kcal <= 0 || kcal > 900)
             continue;
@@ -1105,33 +1157,55 @@ async function searchOpenFoodFacts(query) {
         if (seen.has(key))
             continue;
         seen.add(key);
-        const brand = String(product.brands || '').split(',')[0].trim();
+        const brand = decodeEntities(String(item.brands || '')).split(',')[0].trim();
         out.push({ name, kcal100g: kcal, note: brand || 'Open Food Facts' });
         if (out.length >= ONLINE_MAX_RESULTS)
             break;
     }
     return out;
 }
-/** Пробуем источники по очереди: первый, который что-то нашёл, и выигрывает. */
+function shortError(e) {
+    const text = e instanceof Error ? e.message : String(e);
+    return text.length > 60 ? text.slice(0, 60) + '…' : text;
+}
+/**
+ * Длинную фразу вроде «Кофе со сливками и сиропом» база продуктов не найдёт: там лежат
+ * отдельные продукты. Поэтому пробуем сначала фразу целиком, потом её сокращения —
+ * первые два слова, затем первое.
+ */
+function queryVariants(query) {
+    const words = query.split(/\s+/).filter(Boolean);
+    const variants = [query];
+    if (words.length > 2)
+        variants.push(words.slice(0, 2).join(' '));
+    if (words.length > 1)
+        variants.push(words[0]);
+    return variants.filter((v, i, all) => v.length >= 2 && all.indexOf(v) === i);
+}
+/** Пробуем источники по очереди, каждый — на всех вариантах запроса. */
 async function searchFoodEverywhere(query) {
     const sources = isNativeApp()
-        ? [() => searchCalorizator(query), () => searchOpenFoodFacts(query)]
-        : [() => searchOpenFoodFacts(query)];
-    let lastError = null;
+        ? [{ name: 'calorizator', run: searchCalorizator }, { name: 'Open Food Facts', run: searchOpenFoodFacts }]
+        : [{ name: 'Open Food Facts', run: searchOpenFoodFacts }];
+    const failures = [];
     for (const source of sources) {
-        try {
-            const found = await source();
-            if (found.length > 0)
-                return found;
-        }
-        catch (e) {
-            lastError = e;
-            console.warn('источник поиска не ответил', e);
+        for (const variant of queryVariants(query)) {
+            try {
+                const found = await source.run(variant);
+                if (found.length > 0)
+                    return { items: found, failures, usedQuery: variant };
+            }
+            catch (e) {
+                // Ошибка бывает и разовой (перегрузка сервиса), поэтому пробуем оставшиеся
+                // варианты запроса, а не сдаёмся на первом сбое.
+                const reason = source.name + ': ' + shortError(e);
+                if (!failures.includes(reason))
+                    failures.push(reason);
+                console.warn('источник поиска не ответил', source.name, e);
+            }
         }
     }
-    if (lastError)
-        throw lastError;
-    return [];
+    return { items: [], failures, usedQuery: query };
 }
 async function searchFoodOnlineHandler() {
     const q = el('food-search').value.trim();
@@ -1143,15 +1217,22 @@ async function searchFoodOnlineHandler() {
     const origHtml = btn.innerHTML;
     btn.innerHTML = '<div class="spinner"></div> Ищу…';
     try {
-        const found = await searchFoodEverywhere(q);
-        if (found.length === 0) {
-            showToast('Ничего не нашлось — введите калорийность вручную');
+        const result = await searchFoodEverywhere(q);
+        if (result.items.length === 0) {
+            // Разница принципиальная: «в базе нет такого продукта» и «база недоступна» —
+            // это разные проблемы, и решения у них тоже разные.
+            showToast(result.failures.length > 0
+                ? 'Источники не ответили — ' + result.failures.join('; ')
+                : 'В базах нет такого продукта — укажите калорийность вручную');
             manualFoodEntry();
             return;
         }
         // Выбор оставляем за человеком: на один запрос приходит несколько вариантов
         // с разной жирностью и разной калорийностью.
-        el('food-suggest').innerHTML = '<div class="suggest-head">Найдено в интернете</div>' + found.map(f => `
+        const head = result.usedQuery === q
+            ? 'Найдено в интернете'
+            : 'Найдено по запросу «' + escapeHtml(result.usedQuery) + '»';
+        el('food-suggest').innerHTML = '<div class="suggest-head">' + head + '</div>' + result.items.map(f => `
       <div class="suggest-item" onclick='selectFood(${JSON.stringify(f.name)}, ${f.kcal100g})'>
         <div class="n">${escapeHtml(f.name)}</div>
         <div class="k">${f.kcal100g} ккал/100г · ${escapeHtml(f.note)}</div>
@@ -1159,7 +1240,7 @@ async function searchFoodOnlineHandler() {
     }
     catch (e) {
         console.error(e);
-        showToast('Нет связи с базой продуктов — введите калорийность вручную');
+        showToast('Поиск сорвался: ' + shortError(e));
         manualFoodEntry();
     }
     finally {
