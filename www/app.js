@@ -111,6 +111,7 @@ async function switchView(tab) {
     currentTab = tab;
     document.querySelectorAll('.view').forEach(v => v.hidden = true);
     el('view-' + tab).hidden = false;
+    el('view-' + tab).scrollTop = 0; // у каждой вкладки теперь свой скролл — открываем её сверху
     document.querySelectorAll('.navbtn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
     if (tab === 'history')
         renderHistorySubtab();
