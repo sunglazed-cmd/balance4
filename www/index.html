@@ -320,7 +320,13 @@
     border:1px solid var(--border-soft); border-radius:18px; padding:18px; text-align:center; margin: 20px 0;
   }
   .tdee-preview .v{ font-size:34px; font-weight:800; font-family:'JetBrains Mono',monospace; }
-  .tdee-breakdown{ font-size:11.5px; color:var(--muted2); font-family:'JetBrains Mono',monospace; margin-top:8px; line-height:1.5; }
+  .total-card{
+    background:var(--surface); border:1px solid var(--border-soft); border-radius:18px;
+    padding:16px; text-align:center; margin-bottom:16px;
+  }
+  .total-card .v{ font-size:26px; font-weight:800; font-family:'JetBrains Mono',monospace; }
+  .total-card .k{ font-size:11.5px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:0.06em; margin-top:4px; }
+  .total-card .sub{ font-size:11.5px; color:var(--muted2); margin-top:6px; }
   .tdee-preview .k{ font-size:12px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:0.06em; margin-top:4px;}
 
   /* ---------- modal / sheet ---------- */
@@ -471,6 +477,12 @@
       </div>
     </div>
 
+    <div class="total-card" id="hist-total-card">
+      <div class="v num" id="hist-total-value">—</div>
+      <div class="k" id="hist-total-label">за всё время</div>
+      <div class="sub" id="hist-total-period"></div>
+    </div>
+
     <div class="hist-subnav">
       <button id="hsub-week" class="on" onclick="setHistorySubtab('week')">Неделя</button>
       <button id="hsub-month" onclick="setHistorySubtab('month')">Месяц</button>
@@ -597,12 +609,10 @@
 
     <div class="tdee-preview">
       <div class="v num" id="profile-tdee-preview">—</div>
-      <div class="k">дневной бюджет калорий (TDEE с учётом цели)</div>
-      <div class="tdee-breakdown" id="profile-tdee-breakdown"></div>
+      <div class="k">дневной бюджет калорий</div>
     </div>
 
     <button class="primary-btn" onclick="saveProfile()">Сохранить профиль</button>
-    <p class="muted-note">Расчёт по формуле Миффлина–Сан Жеора. Бюджет — ориентир: слушай своё тело и корректируй при необходимости.</p>
   </div>
 
   <!-- ============ NAV ============ -->

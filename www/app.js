@@ -498,6 +498,7 @@ function currentAddTarget() {
     return addTargetMode === 'dayeditor' && dayEditor ? dayEditor.data : today;
 }
 async function persistAddTarget() {
+    forgetFirstFoodDay();
     if (addTargetMode === 'dayeditor' && dayEditor) {
         await saveDayEditorAndRender();
     }
@@ -526,7 +527,101 @@ function setHistorySubtab(tab) {
     el('hist-eyebrow').textContent = eyebrow;
     renderHistorySubtab();
 }
+/**
+ * День первой записи еды — от него ведётся вся история. Раньше него смотреть не на что:
+ * пустые дни до начала ведения дневника не «экономия», а просто отсутствие данных.
+ * Ищем по месячным сводкам: в них у каждого дня лежит съеденное (c), и c > 0 бывает
+ * только когда еда записана — шаги и тренировки в эту графу не попадают.
+ */
+let firstFoodDayCache = null;
+/** Сбрасывается при любой записи: первая запись могла появиться раньше известной. */
+function forgetFirstFoodDay() {
+    firstFoodDayCache = null;
+}
+async function firstFoodDayKey() {
+    if (firstFoodDayCache)
+        return firstFoodDayCache;
+    const monthKeys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+        const raw = localStorage.key(i);
+        if (raw && raw.startsWith('cal_summary:'))
+            monthKeys.push(raw.slice('cal_'.length));
+    }
+    monthKeys.sort();
+    for (const monthKey of monthKeys) {
+        const summary = (await storeGet(monthKey)) || {};
+        const days = Object.keys(summary).filter(d => (summary[d] && summary[d].c > 0)).sort();
+        if (days.length > 0) {
+            firstFoodDayCache = monthKey.slice('summary:'.length) + '-' + days[0];
+            return firstFoodDayCache;
+        }
+    }
+    // Первая запись может быть сделана только что и ещё не попасть в сводку.
+    if (today.foods.length > 0 && currentDayKey) {
+        firstFoodDayCache = currentDayKey;
+        return firstFoodDayCache;
+    }
+    return null;
+}
+/** Сумма всех дневных остатков с первого дня записей: сколько всего сэкономлено или перебрано. */
+async function renderHistoryTotal() {
+    const startKey = await firstFoodDayKey();
+    const valueEl = el('hist-total-value');
+    const labelEl = el('hist-total-label');
+    const periodEl = el('hist-total-period');
+    if (!startKey) {
+        valueEl.textContent = '—';
+        valueEl.style.color = 'var(--text)';
+        labelEl.textContent = 'за всё время';
+        periodEl.textContent = 'Записей пока нет — добавь первый приём пищи';
+        return;
+    }
+    const todayK = todayKey();
+    let total = 0, daysCounted = 0;
+    const start = new Date(startKey);
+    const cursor = new Date(start.getFullYear(), start.getMonth(), 1);
+    const last = new Date();
+    while (cursor <= last) {
+        const summary = await getMonthSummary(cursor.getFullYear(), cursor.getMonth() + 1);
+        for (const dd of Object.keys(summary)) {
+            const key = `${cursor.getFullYear()}-${pad(cursor.getMonth() + 1)}-${dd}`;
+            if (key < startKey || key > todayK)
+                continue;
+            // Сегодняшний день берём из живых данных: в сводку он попадает только после сохранения.
+            if (key === todayK)
+                continue;
+            const day = summary[dd];
+            total += day.bud - day.c;
+            daysCounted++;
+        }
+        cursor.setMonth(cursor.getMonth() + 1);
+    }
+    if (todayK >= startKey && (today.foods.length > 0 || today.workouts.length > 0 || (today.steps || 0) > 0)) {
+        total += computeTotals().remaining;
+        daysCounted++;
+    }
+    const saved = total >= 0;
+    valueEl.textContent = (saved ? '+' : '') + fmt(total) + ' ккал';
+    valueEl.style.color = saved ? 'var(--good)' : 'var(--over)';
+    labelEl.textContent = saved ? 'суммарная экономия' : 'суммарное превышение';
+    const startDate = new Date(startKey);
+    periodEl.textContent = 'с ' + startDate.getDate() + ' ' + MONTH_NAMES_GENITIVE[startDate.getMonth()] +
+        ' · ' + daysCounted + ' ' + pluralDays(daysCounted);
+}
+const MONTH_NAMES_GENITIVE = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+function pluralDays(n) {
+    const tail = n % 100;
+    if (tail >= 11 && tail <= 14)
+        return 'дней';
+    const last = n % 10;
+    if (last === 1)
+        return 'день';
+    if (last >= 2 && last <= 4)
+        return 'дня';
+    return 'дней';
+}
 function renderHistorySubtab() {
+    renderHistoryTotal();
     if (historySubtab === 'week')
         renderWeekView();
     if (historySubtab === 'month')
@@ -536,12 +631,19 @@ function renderHistorySubtab() {
 }
 async function renderWeekView() {
     const container = el('week-bars');
+    // История начинается с первой записи еды: дни до неё — не «идеальные», а просто
+    // не прожитые в дневнике, и рисовать по ним столбики было бы враньём.
+    const startKey = await firstFoodDayKey();
     const days = [];
     for (let i = 6; i >= 0; i--) {
         const d = new Date();
         d.setDate(d.getDate() - i);
+        if (startKey && dateKey(d) < startKey)
+            continue;
         days.push(d);
     }
+    if (days.length === 0)
+        days.push(new Date());
     const goalCalories = profile ? calcGoalCalories(profile) : 2000;
     const results = [];
     for (const d of days) {
@@ -558,15 +660,20 @@ async function renderWeekView() {
         const consumed = (data.foods || []).reduce((s, f) => s + f.kcal, 0);
         const burned = (data.workouts || []).reduce((s, w) => s + w.kcal, 0) + stepsKcal(data.steps || 0, profile ? profile.weight : 70);
         const budget = goalCalories + burned;
-        results.push({ d, consumed, burned, budget, remaining: budget - consumed });
+        // День без единой записи — это не «сэкономленный дневной бюджет», а пропуск:
+        // засчитывать его в средний баланс значило бы хвалить себя за невнесённые данные.
+        const logged = (data.foods || []).length > 0 || (data.workouts || []).length > 0 || (data.steps || 0) > 0;
+        results.push({ d, consumed, burned, budget, remaining: budget - consumed, logged });
     }
     const maxAbs = Math.max(...results.map(r => Math.abs(r.remaining)), goalCalories * 0.15, 200);
     const weekdays = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
     let html = '<div class="baseline"></div>';
     results.forEach(r => {
         const isToday = dateKey(r.d) === todayKey();
-        const hpx = Math.min(100, Math.abs(r.remaining) / maxAbs * 100);
-        const color = r.remaining >= 0 ? 'linear-gradient(180deg, var(--good), #5FAE33)' : 'linear-gradient(180deg, var(--over), #E23D5C)';
+        const hpx = r.logged ? Math.min(100, Math.abs(r.remaining) / maxAbs * 100) : 4;
+        const color = !r.logged
+            ? 'var(--surface2)'
+            : r.remaining >= 0 ? 'linear-gradient(180deg, var(--good), #5FAE33)' : 'linear-gradient(180deg, var(--over), #E23D5C)';
         html += `<div class="bar-col ${isToday ? 'today' : ''}">
       <div class="bar-track" style="align-items:flex-end;">
         <div class="bar-fill" style="height:${hpx}%; background:${color};"></div>
@@ -575,10 +682,11 @@ async function renderWeekView() {
     </div>`;
     });
     container.innerHTML = html;
-    const avg = results.reduce((s, r) => s + r.remaining, 0) / results.length;
-    el('hist-avg').textContent = (avg >= 0 ? '+' : '') + fmt(avg);
-    const okDays = results.filter(r => r.remaining >= 0).length;
-    el('hist-days-ok').textContent = okDays + '/7';
+    const logged = results.filter(r => r.logged);
+    const avg = logged.length > 0 ? logged.reduce((s, r) => s + r.remaining, 0) / logged.length : 0;
+    el('hist-avg').textContent = logged.length > 0 ? (avg >= 0 ? '+' : '') + fmt(avg) : '—';
+    const okDays = logged.filter(r => r.remaining >= 0).length;
+    el('hist-days-ok').textContent = okDays + '/' + logged.length;
 }
 /* ---- month calendar ---- */
 const MONTH_NAMES = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
@@ -590,11 +698,25 @@ function dayColor(remaining, budget) {
     const alpha = (0.32 + ratio * 0.6).toFixed(2);
     return remaining >= 0 ? `rgba(143,209,79,${alpha})` : `rgba(255,92,122,${alpha})`;
 }
-function shiftMonth(delta) {
-    viewMonth.setMonth(viewMonth.getMonth() + delta);
+async function shiftMonth(delta) {
+    const shifted = new Date(viewMonth.getFullYear(), viewMonth.getMonth() + delta, 1);
+    if (await isBeforeFirstRecord(shifted)) {
+        showToast('Раньше первой записи истории нет');
+        return;
+    }
+    viewMonth = shifted;
     selectedDayKey = null;
     el('day-detail').classList.remove('show');
     renderMonthView();
+}
+/** Месяц целиком раньше того, в котором сделана первая запись еды. */
+async function isBeforeFirstRecord(month) {
+    const startKey = await firstFoodDayKey();
+    if (!startKey)
+        return false;
+    const start = new Date(startKey);
+    return month.getFullYear() < start.getFullYear() ||
+        (month.getFullYear() === start.getFullYear() && month.getMonth() < start.getMonth());
 }
 async function renderMonthView() {
     const y = viewMonth.getFullYear(), m = viewMonth.getMonth() + 1; // 1-12
@@ -734,7 +856,12 @@ async function saveDayEditorAndRender() {
         showDayDetail(dayEditor.key, summary);
     }
 }
-function shiftYear(delta) {
+async function shiftYear(delta) {
+    const startKey = await firstFoodDayKey();
+    if (startKey && viewYear + delta < new Date(startKey).getFullYear()) {
+        showToast('Раньше первой записи истории нет');
+        return;
+    }
     viewYear += delta;
     renderYearView();
 }
@@ -829,31 +956,10 @@ function readProfileForm() {
         goal: goalVal
     };
 }
-const ACTIVITY_LABELS = {
-    '1.2': 'минимум движения',
-    '1.375': '1–3 тренировки в неделю',
-    '1.55': '3–5 тренировок в неделю',
-    '1.725': '6–7 тренировок в неделю',
-    '1.9': 'физический труд'
-};
-const GOAL_LABELS = {
-    lose: 'снижение веса, −20 %',
-    maintain: 'удержание веса, без правки',
-    gain: 'набор массы, +12 %'
-};
 /** Показывает не только итог, но и из чего он сложился — иначе цифра выглядит взятой с потолка. */
 function updateTdeePreview() {
     const p = readProfileForm();
-    const cal = calcGoalCalories(p);
-    el('profile-tdee-preview').textContent = fmt(cal) + ' ккал';
-    const bmr = calcBMR(p);
-    const activityText = ACTIVITY_LABELS[String(p.activity)] || 'коэффициент ' + p.activity;
-    const goalFactor = p.goal === 'lose' ? 0.8 : p.goal === 'gain' ? 1.12 : 1;
-    el('profile-tdee-breakdown').innerHTML =
-        'обмен покоя ' + fmt(bmr) + ' × ' + String(p.activity).replace('.', ',') + ' (' + activityText + ')' +
-            (goalFactor === 1 ? '' : ' × ' + String(goalFactor).replace('.', ',')) +
-            '<br>цель: ' + GOAL_LABELS[p.goal] +
-            '<br>шаги и тренировки прибавляются к бюджету сверху';
+    el('profile-tdee-preview').textContent = fmt(calcGoalCalories(p)) + ' ккал';
 }
 function fillProfileForm() {
     if (profile) {
