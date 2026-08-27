@@ -96,10 +96,13 @@ public class PedometerPlugin extends Plugin {
         String storedDay = prefs().getString(StepCounterService.KEY_TODAY_DATE, null);
         // If the service hasn't run yet today (fresh install, or app opened before the service's
         // own day-rollover check fires), report 0 for today rather than yesterday's stale total.
-        int steps = today.equals(storedDay) ? prefs().getInt(StepCounterService.KEY_TODAY_STEPS, 0) : 0;
+        boolean sameDay = today.equals(storedDay);
+        int steps = sameDay ? prefs().getInt(StepCounterService.KEY_TODAY_STEPS, 0) : 0;
+        long walkMs = sameDay ? prefs().getLong(StepCounterService.KEY_TODAY_WALK_MS, 0L) : 0L;
 
         JSObject result = new JSObject();
         result.put("steps", steps);
+        result.put("walkMs", walkMs);
         result.put("date", today);
         call.resolve(result);
     }

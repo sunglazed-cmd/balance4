@@ -63,6 +63,8 @@ interface DayData {
   foods: FoodEntry[];
   workouts: WorkoutEntry[];
   steps?: number;
+  /** Время в движении, миллисекунды: сумма промежутков между соседними шагами. */
+  walkMs?: number;
 }
 
 /** User profile, stored under the `profile` key. */
@@ -120,7 +122,7 @@ let profile: Profile | null = null;
 let customFoods: CustomFood[] = [];
 let foodHistory: FoodHistoryEntry[] = [];        // всё, что уже добавляли, для подсказок
 let workoutHistory: WorkoutHistoryEntry[] = [];  // то же по тренировкам
-let today: DayData = { foods: [], workouts: [], steps: 0 };
+let today: DayData = { foods: [], workouts: [], steps: 0, walkMs: 0 };
 let currentDayKey: string | null = null; // date key that `today` currently holds data for
 let historyCache: Record<string, DayData> = {};   // dateKey -> day record
 let currentTab = 'today';
@@ -142,6 +144,7 @@ let pedoActive = false;        // sensor listener currently attached
 let pedoPending = false;       // wants to run but blocked (needs a tap, e.g. iOS permission gesture)
 let pedoGravity = 9.81;        // running low-pass estimate of gravity magnitude
 let pedoLastStepTime = 0;
+let pedoLastStepAt = 0;        // отметка времени предыдущего шага — из неё копится время ходьбы
 let pedoAboveThreshold = false;
 let pedoSaveTimer: ReturnType<typeof setTimeout> | null = null;
 let pedoUnsavedSteps = 0;      // steps accumulated since last persisted save
@@ -329,6 +332,11 @@ function renderPedometer(){
   el('pedo-steps').textContent = fmt(steps);
   el('pedo-distance').textContent = (dist/1000).toLocaleString('ru-RU', {minimumFractionDigits:1, maximumFractionDigits:1}) + ' км';
   el('pedo-kcal').textContent = fmt(kcal) + ' ккал';
+  // Время появляется только когда оно есть: «0 мин» рядом с нулём шагов — лишний шум.
+  const minutes = walkMinutes(today);
+  el('pedo-time').textContent = minutes + ' мин';
+  el('pedo-time').hidden = minutes <= 0;
+  el('pedo-time-sep').hidden = minutes <= 0;
 
   const dot = el('pedo-dot');
   const lbl = el('pedo-toggle-lbl');
@@ -359,8 +367,35 @@ function renderPedometer(){
   }
 }
 
+/** Пауза длиннее этого — уже не одна прогулка: во «время в движении» не идёт. */
+const WALK_GAP_MS = 10000;
+/** Ходьба среднего темпа, MET — по нему считаются калории за время без телефона. */
+const WALK_MET = 3.5;
+const WALK_MANUAL_NAME = 'Ходьба (без телефона)';
+
+/** Копит время ходьбы из промежутков между шагами. */
+function registerWalkTime(target: DayData): void {
+  const now = Date.now();
+  if(pedoLastStepAt > 0){
+    const gap = now - pedoLastStepAt;
+    if(gap > 0 && gap <= WALK_GAP_MS) target.walkMs = (target.walkMs || 0) + gap;
+  }
+  pedoLastStepAt = now;
+}
+
+function walkMinutes(day: DayData): number {
+  return Math.round((day.walkMs || 0) / 60000);
+}
+
+/** Калории за ходьбу по времени: формула та же, что у обычной тренировки. */
+function walkTimeKcal(minutes: number): number {
+  const weight = profile ? profile.weight : 70;
+  return Math.round(WALK_MET * 3.5 * weight / 200 * minutes);
+}
+
 function pedoRegisterStep(){
   today.steps = (today.steps||0) + 1;
+  registerWalkTime(today);
   pedoUnsavedSteps++;
   // Update the live numbers immediately for responsiveness...
   el('pedo-steps').textContent = fmt(today.steps);
@@ -421,7 +456,8 @@ let pedoPollTimer: ReturnType<typeof setInterval> | null = null;
 
 async function pedoNativePoll(){
   try{
-    const { steps } = await window.Capacitor.Plugins.Pedometer.getSteps();
+    const { steps, walkMs } = await window.Capacitor.Plugins.Pedometer.getSteps();
+    if(typeof walkMs === 'number') today.walkMs = walkMs;
     if(typeof steps === 'number' && steps !== today.steps){
       today.steps = steps; // the native service is authoritative — replace, don't add
       pedoUnsavedSteps++;
@@ -743,7 +779,8 @@ async function renderWeekView(){
     const color = !r.logged
       ? 'var(--surface2)'
       : r.remaining >= 0 ? 'linear-gradient(180deg, var(--good), #5FAE33)' : 'linear-gradient(180deg, var(--over), #E23D5C)';
-    html += `<div class="bar-col ${isToday?'today':''}">
+    // Столбик недели — вход в этот день: посмотреть и поправить, даже если он давно прошёл.
+    html += `<div class="bar-col ${isToday?'today':''}" onclick="openDayEditor('${dateKey(r.d)}')">
       <div class="bar-track" style="align-items:flex-end;">
         <div class="bar-fill" style="height:${hpx}%; background:${color};"></div>
       </div>
@@ -901,17 +938,17 @@ function renderDayEditor(){
     <div class="stat-card"><div class="v" style="color:var(--intake)">${fmt(totals.consumed)}</div><div class="k">Съедено</div></div>
     <div class="stat-card"><div class="v" style="color:${totals.remaining>=0?'var(--good)':'var(--over)'}">${totals.remaining>=0?'+':''}${fmt(totals.remaining)}</div><div class="k">Баланс</div></div>
   `;
-  el('dayedit-steps-input').value = String(dayEditor.data.steps || 0);
+  const steps = dayEditor.data.steps || 0;
+  const manual = manualWalkEntry(dayEditor.data);
+  el('dayedit-walk').innerHTML = `
+    <div class="cell"><div class="v">${fmt(steps)}</div><div class="k">шагов</div></div>
+    <div class="cell"><div class="v">${(stepsDistanceM(steps, profile)/1000).toLocaleString('ru-RU', {minimumFractionDigits:1, maximumFractionDigits:1})}</div><div class="k">км</div></div>
+    <div class="cell"><div class="v">${walkMinutes(dayEditor.data) + (manual && manual.minutes ? manual.minutes : 0)}</div><div class="k">минут</div></div>
+  `;
   renderFoodList(el('dayedit-food-list'), dayEditor.data.foods, 'dayeditor');
   renderWorkoutList(el('dayedit-workout-list'), dayEditor.data.workouts, 'dayeditor');
 }
 
-function updateDayEditorSteps(){
-  if(!dayEditor) return;
-  const v = parseInt(el('dayedit-steps-input').value) || 0;
-  dayEditor.data.steps = Math.max(0, v);
-  saveDayEditorAndRender();
-}
 
 async function saveDayEditorAndRender(){
   if(!dayEditor) return;
@@ -919,9 +956,9 @@ async function saveDayEditorAndRender(){
   await updateMonthSummaryForDate(dayEditor.key, computeTotalsFor(dayEditor.data));
   renderDayEditor();
 
-  // Keep the calendar underneath in sync (colour/detail panel for the day we just edited).
-  if(historySubtab === 'month') await renderMonthView();
-  if(historySubtab === 'year') await renderYearView();
+  // Держим историю под редактором в согласии с правкой: и активную вкладку,
+  // и суммарный итог наверху — он тоже меняется от каждой правки дня.
+  renderHistorySubtab();
   if(selectedDayKey === dayEditor.key){
     const [y,m] = dayEditor.key.split('-');
     const summary = await getMonthSummary(y, parseInt(m));
@@ -1586,6 +1623,85 @@ async function confirmAddWorkout(){
   showToast('Сохранено: '+name);
 }
 
+/* ===================== ХОДЬБА ===================== */
+/**
+ * Один лист на оба случая: правка сегодняшнего дня и правка дня из истории.
+ * Куда писать, решает currentAddTarget() — тот же механизм, что у еды и тренировок.
+ *
+ * Шаги и «ходьба без телефона» намеренно разведены: шаги дают калории через
+ * пройденное расстояние, а время без телефона — через MET, как обычная тренировка.
+ * Складывать их в одну графу нельзя, иначе одна прогулка посчиталась бы дважды.
+ */
+function walkTargetIsToday(): boolean {
+  return !(addTargetMode === 'dayeditor' && dayEditor);
+}
+
+/** Запись про ходьбу без телефона, если она уже есть в этом дне. */
+function manualWalkEntry(day: DayData): WorkoutEntry | undefined {
+  return day.workouts.find(w => w.name === WALK_MANUAL_NAME);
+}
+
+function openWalkModal(){
+  const target = currentAddTarget();
+  el('walk-title').textContent = walkTargetIsToday() ? 'Ходьба сегодня' : 'Ходьба за этот день';
+
+  const measured = walkMinutes(target);
+  el('walk-measured').innerHTML = measured > 0
+    ? 'Шагомер насчитал <b>' + measured + '</b> мин в движении и <b>' + fmt(target.steps || 0) + '</b> шагов.'
+    : 'Шагомер за этот день ничего не записал — впиши руками, сколько прошёл.';
+
+  el('walk-steps').value = String(target.steps || 0);
+  const manual = manualWalkEntry(target);
+  el('walk-minutes').value = manual && manual.minutes ? String(manual.minutes) : '';
+  updateWalkPreview();
+  el('overlay-walk').classList.add('show');
+}
+
+function closeWalkModal(){
+  el('overlay-walk').classList.remove('show');
+}
+
+/** Показывает, во что превратятся введённые числа, до нажатия «Сохранить». */
+function updateWalkPreview(){
+  const steps = Math.max(0, parseInt(el('walk-steps').value) || 0);
+  const minutes = Math.max(0, parseInt(el('walk-minutes').value) || 0);
+  const dist = stepsDistanceM(steps, profile) / 1000;
+  el('walk-steps-hint').textContent = dist.toLocaleString('ru-RU', {minimumFractionDigits: 1, maximumFractionDigits: 1}) +
+    ' км · ' + fmt(stepsKcal(steps, profile ? profile.weight : 70)) + ' ккал';
+  el('walk-minutes-hint').textContent = minutes > 0
+    ? 'Прогулка, которую шагомер не увидел: ' + fmt(walkTimeKcal(minutes)) + ' ккал, попадёт в тренировки'
+    : 'Прогулка, которую шагомер не увидел';
+}
+
+async function saveWalk(){
+  const target = currentAddTarget();
+  target.steps = Math.max(0, parseInt(el('walk-steps').value) || 0);
+
+  const minutes = Math.max(0, parseInt(el('walk-minutes').value) || 0);
+  const existing = manualWalkEntry(target);
+  if(minutes > 0){
+    const kcal = walkTimeKcal(minutes);
+    if(existing){
+      existing.minutes = minutes;
+      existing.kcal = kcal;
+    } else {
+      target.workouts.push({
+        id: Date.now()+'-'+Math.random().toString(36).slice(2,7),
+        name: WALK_MANUAL_NAME,
+        minutes,
+        kcal,
+        time: new Date().toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})
+      });
+    }
+  } else if(existing){
+    // Обнулили минуты — убираем и саму запись, чтобы не висела пустой строкой.
+    target.workouts = target.workouts.filter(w => w !== existing);
+  }
+
+  await persistAddTarget();
+  closeWalkModal();
+  showToast('Ходьба сохранена');
+}
 /* ===================== ЭКРАННАЯ КЛАВИАТУРА =====================
    Android не всегда уменьшает WebView, когда открывается клавиатура: разметка остаётся
    прежней высоты, и всё, что приклеено к нижнему краю (наши модалки), уезжает под неё.
@@ -1696,7 +1812,8 @@ Object.assign(window as unknown as Record<string, unknown>, {
   selectWorkout, selectWorkoutManual, setActivity, setGender,
   setGoal,
   setHistorySubtab, shiftMonth, shiftYear, switchView,
-  togglePedometer, updateDayEditorSteps, updateFoodPreview, updateWorkoutPreview,
+  togglePedometer, updateFoodPreview, updateWorkoutPreview,
+  openWalkModal, closeWalkModal, updateWalkPreview, saveWalk,
 });
 
 // This file is an ES module (loaded with <script type="module">), which keeps its

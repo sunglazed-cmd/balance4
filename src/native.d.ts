@@ -10,8 +10,11 @@
 export {};
 
 interface PedometerPlugin {
-  /** Steps recorded by the hardware sensor for the current calendar day (0 if the service hasn't run today). */
-  getSteps(): Promise<{ steps: number; date: string }>;
+  /**
+   * Шаги за текущий день по датчику (0, если сервис сегодня не работал) и время в движении:
+   * walkMs — сумма промежутков между соседними шагами, миллисекунды.
+   */
+  getSteps(): Promise<{ steps: number; walkMs: number; date: string }>;
   /** Starts the foreground service — keeps counting with the screen off or the app closed. */
   start(): Promise<void>;
   /** Stops the foreground service and dismisses its notification. */

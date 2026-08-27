@@ -38,6 +38,7 @@ public class StepCounterService extends Service implements SensorEventListener {
 
     public static final String PREFS_NAME = "pedometer_prefs";
     public static final String KEY_TODAY_STEPS = "today_steps";
+    public static final String KEY_TODAY_WALK_MS = "today_walk_ms";
     public static final String KEY_TODAY_DATE = "today_date";
     public static final String KEY_LAST_RAW_VALUE = "last_raw_value";
     public static final String KEY_ENABLED = "pedometer_enabled"; // persisted so BootReceiver knows whether to auto-resume
@@ -55,6 +56,13 @@ public class StepCounterService extends Service implements SensorEventListener {
      *  fast as a human can read it, and faster than that just burns battery on binder calls. */
     private static final long MIN_NOTIFY_INTERVAL_MS = 1000L;
 
+    /**
+     * Шаги дальше этого промежутка друг от друга — уже не одна прогулка, а две.
+     * Пауза длиннее десяти секунд во время ходьбы человеком не ощущается как ходьба,
+     * поэтому такой разрыв во «время в движении» не засчитывается.
+     */
+    private static final long MAX_STEP_GAP_MS = 10_000L;
+
     private SharedPreferences prefs;
     private SensorManager sensorManager;
     private Sensor stepSensor;      // TYPE_STEP_COUNTER — cumulative since boot, authoritative
@@ -65,6 +73,8 @@ public class StepCounterService extends Service implements SensorEventListener {
     private boolean notifyScheduled = false;
     /** Steps already added from the detector that the next counter reading will also include. */
     private int detectorStepsSinceCounter = 0;
+    /** Когда пришёл предыдущий шаг — из него складывается время в движении. */
+    private long lastStepAt = 0L;
 
     @Override
     public void onCreate() {
@@ -160,6 +170,7 @@ public class StepCounterService extends Service implements SensorEventListener {
                 .putInt(KEY_LAST_RAW_VALUE, rawValue)
                 .apply();
 
+        accumulateWalkTime();
         updateNotification(todaySteps);
     }
 
@@ -172,7 +183,24 @@ public class StepCounterService extends Service implements SensorEventListener {
         int todaySteps = prefs.getInt(KEY_TODAY_STEPS, 0) + 1;
         detectorStepsSinceCounter++;
         prefs.edit().putInt(KEY_TODAY_STEPS, todaySteps).apply();
+        accumulateWalkTime();
         updateNotification(todaySteps);
+    }
+
+    /**
+     * Копит время в движении: промежуток между двумя соседними шагами и есть время ходьбы,
+     * если он достаточно короткий. Так минуты получаются из самих шагов, без отдельного
+     * датчика и без таймера, который пришлось бы будить каждую минуту.
+     */
+    private void accumulateWalkTime() {
+        long now = SystemClock.elapsedRealtime();
+        if (lastStepAt > 0) {
+            long gap = now - lastStepAt;
+            if (gap > 0 && gap <= MAX_STEP_GAP_MS) {
+                prefs.edit().putLong(KEY_TODAY_WALK_MS, prefs.getLong(KEY_TODAY_WALK_MS, 0L) + gap).apply();
+            }
+        }
+        lastStepAt = now;
     }
 
     /**
@@ -212,9 +240,11 @@ public class StepCounterService extends Service implements SensorEventListener {
         String today = dayKey();
         if (!today.equals(storedDay)) {
             detectorStepsSinceCounter = 0;
+            lastStepAt = 0L;
             prefs.edit()
                     .putString(KEY_TODAY_DATE, today)
                     .putInt(KEY_TODAY_STEPS, 0)
+                    .putLong(KEY_TODAY_WALK_MS, 0L)
                     // Deliberately keep KEY_LAST_RAW_VALUE as-is: the hardware counter is cumulative
                     // since boot, so tomorrow's delta is still measured from today's last raw value.
                     .apply();
