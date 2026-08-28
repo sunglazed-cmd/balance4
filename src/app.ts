@@ -342,10 +342,14 @@ function renderPedometer(){
   const lbl = el('pedo-toggle-lbl');
   const note = el('pedo-note');
   dot.classList.remove('active','pending');
+  // Подсказка остаётся только там, где от человека что-то требуется. Когда всё работает,
+  // состояние и так видно по кнопке, а лишний текст только занимает экран.
+  note.hidden = false;
   if(pedoActive && pedoNative){
     dot.classList.add('active');
     lbl.textContent = 'Остановить';
-    note.textContent = 'Фоновый шагомер активен — считает шаги даже при выключенном экране и закрытом приложении.';
+    note.textContent = '';
+    note.hidden = true;
   } else if(pedoActive && pedoSilent){
     dot.classList.add('pending');
     lbl.textContent = 'Остановить';

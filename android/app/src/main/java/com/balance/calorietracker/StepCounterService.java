@@ -63,6 +63,12 @@ public class StepCounterService extends Service implements SensorEventListener {
      */
     private static final long MAX_STEP_GAP_MS = 10_000L;
 
+    /**
+     * Сколько времени приписывать одному шагу, когда события пришли пачкой.
+     * 550 мс — это около 109 шагов в минуту, обычный темп спокойной ходьбы.
+     */
+    private static final long TYPICAL_STEP_MS = 550L;
+
     private SharedPreferences prefs;
     private SensorManager sensorManager;
     private Sensor stepSensor;      // TYPE_STEP_COUNTER — cumulative since boot, authoritative
@@ -136,7 +142,7 @@ public class StepCounterService extends Service implements SensorEventListener {
     public void onSensorChanged(SensorEvent event) {
         if (event == null) return;
         if (event.sensor.getType() == Sensor.TYPE_STEP_DETECTOR) {
-            onStepDetected();
+            onStepDetected(event.timestamp);
             return;
         }
         if (event.sensor.getType() != Sensor.TYPE_STEP_COUNTER) return;
@@ -146,6 +152,7 @@ public class StepCounterService extends Service implements SensorEventListener {
 
         int lastRaw = prefs.getInt(KEY_LAST_RAW_VALUE, -1);
         int todaySteps = prefs.getInt(KEY_TODAY_STEPS, 0);
+        int stepsThisEvent = 0;   // сколько шагов принесло это событие — нужно для оценки времени
 
         if (lastRaw < 0) {
             // First reading we've ever seen (fresh install, or sensor baseline unknown yet) —
@@ -153,6 +160,7 @@ public class StepCounterService extends Service implements SensorEventListener {
         } else {
             int delta = rawValue - lastRaw;
             if (delta > 0) {
+                stepsThisEvent = delta;
                 // The detector may already have credited some of these steps a moment ago —
                 // count only what is left over, so a step is never counted twice.
                 int alreadyCounted = Math.min(detectorStepsSinceCounter, delta);
@@ -161,6 +169,7 @@ public class StepCounterService extends Service implements SensorEventListener {
                 // Sensor value went backwards -> the device rebooted and the hardware counter
                 // reset to zero. Whatever the new raw value is IS the step count since reboot.
                 todaySteps += rawValue;
+                stepsThisEvent = rawValue;
             }
         }
 
@@ -170,7 +179,9 @@ public class StepCounterService extends Service implements SensorEventListener {
                 .putInt(KEY_LAST_RAW_VALUE, rawValue)
                 .apply();
 
-        accumulateWalkTime();
+        // Время считаем по детектору, когда он есть: там каждое событие — отдельный шаг
+        // со своей отметкой времени. Иначе одни и те же шаги учлись бы дважды.
+        if (stepDetector == null) accumulateWalkTime(event.timestamp, stepsThisEvent);
         updateNotification(todaySteps);
     }
 
@@ -178,12 +189,12 @@ public class StepCounterService extends Service implements SensorEventListener {
      * A single step, reported the instant it happens. Credits it right away so the shade shows
      * the new number immediately; the cumulative counter reconciles the total when it catches up.
      */
-    private void onStepDetected() {
+    private void onStepDetected(long eventTimestampNs) {
         rolloverIfNewDay();
         int todaySteps = prefs.getInt(KEY_TODAY_STEPS, 0) + 1;
         detectorStepsSinceCounter++;
         prefs.edit().putInt(KEY_TODAY_STEPS, todaySteps).apply();
-        accumulateWalkTime();
+        accumulateWalkTime(eventTimestampNs, 1);
         updateNotification(todaySteps);
     }
 
@@ -192,12 +203,27 @@ public class StepCounterService extends Service implements SensorEventListener {
      * если он достаточно короткий. Так минуты получаются из самих шагов, без отдельного
      * датчика и без таймера, который пришлось бы будить каждую минуту.
      */
-    private void accumulateWalkTime() {
-        long now = SystemClock.elapsedRealtime();
-        if (lastStepAt > 0) {
+    private void accumulateWalkTime(long eventTimestampNs, int stepsInEvent) {
+        // Время шага берём из самого события, а не из момента доставки. При выключенном
+        // экране датчик копит события в своём буфере и отдаёт их пачкой, когда процессор
+        // проснётся: по времени доставки вся прогулка выглядела бы как один миг, и минуты
+        // получались втрое меньше настоящих.
+        long now = eventTimestampNs > 0 ? eventTimestampNs / 1_000_000L : SystemClock.elapsedRealtime();
+        if (lastStepAt > 0 && now > lastStepAt) {
             long gap = now - lastStepAt;
-            if (gap > 0 && gap <= MAX_STEP_GAP_MS) {
-                prefs.edit().putLong(KEY_TODAY_WALK_MS, prefs.getLong(KEY_TODAY_WALK_MS, 0L) + gap).apply();
+            long credited;
+            if (gap <= MAX_STEP_GAP_MS) {
+                credited = gap;
+            } else if (stepsInEvent > 1) {
+                // Счётчик без детектора отдаёт сразу несколько шагов и одну отметку времени.
+                // Промежуток тут ничего не говорит о ходьбе, поэтому оцениваем по числу шагов.
+                credited = Math.min(gap, stepsInEvent * TYPICAL_STEP_MS);
+            } else {
+                // Одинокий шаг после долгой паузы — это не ходьба.
+                credited = 0L;
+            }
+            if (credited > 0) {
+                prefs.edit().putLong(KEY_TODAY_WALK_MS, prefs.getLong(KEY_TODAY_WALK_MS, 0L) + credited).apply();
             }
         }
         lastStepAt = now;
