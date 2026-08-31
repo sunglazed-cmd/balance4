@@ -653,6 +653,34 @@ async function firstFoodDayKey() {
     }
     return null;
 }
+/**
+ * Килокалорий в килограмме жира — по этому числу дефицит переводится в вес.
+ * 7 700 — общепринятая оценка для жировой ткани.
+ */
+const KCAL_PER_KG = 7700;
+/**
+ * Дефицит или профицит одним числом, со знаком с точки зрения тела:
+ * минус — съедено меньше бюджета (вес уходит), плюс — больше (вес приходит).
+ *
+ * Внутри день считается остатком бюджета (сколько ещё можно съесть), и там плюс
+ * означает ровно обратное. Разворачиваем знак один раз здесь, чтобы во всей истории
+ * он читался одинаково.
+ */
+function balanceFromRemaining(remaining) {
+    return -remaining;
+}
+/** Цвет по смыслу: для похудения и удержания хорош дефицит, для набора — профицит. */
+function balanceColor(balance) {
+    const wantsSurplus = profile ? profile.goal === 'gain' : false;
+    const good = wantsSurplus ? balance > 0 : balance < 0;
+    if (balance === 0)
+        return 'var(--text)';
+    return good ? 'var(--good)' : 'var(--over)';
+}
+/** «−1 234» или «+1 234»: знак ставим всегда, иначе не видно, в какую сторону. */
+function signedKcal(balance) {
+    return (balance > 0 ? '+' : balance < 0 ? '−' : '') + fmt(Math.abs(balance));
+}
 /** Сумма всех дневных остатков с первого дня записей: сколько всего сэкономлено или перебрано. */
 async function renderHistoryTotal() {
     const startKey = await firstFoodDayKey();
@@ -690,12 +718,14 @@ async function renderHistoryTotal() {
         total += computeTotals().remaining;
         daysCounted++;
     }
-    const saved = total >= 0;
-    valueEl.textContent = (saved ? '+' : '') + fmt(total) + ' ккал';
-    valueEl.style.color = saved ? 'var(--good)' : 'var(--over)';
-    labelEl.textContent = saved ? 'суммарная экономия' : 'суммарное превышение';
+    const balance = balanceFromRemaining(total);
+    valueEl.textContent = signedKcal(balance) + ' ккал';
+    valueEl.style.color = balanceColor(balance);
+    labelEl.textContent = balance === 0 ? 'ровно по бюджету' : balance < 0 ? 'суммарный дефицит' : 'суммарный профицит';
+    const kg = Math.abs(balance) / KCAL_PER_KG;
+    const kgText = kg >= 0.05 ? '≈ ' + kg.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' кг · ' : '';
     const startDate = new Date(startKey);
-    periodEl.textContent = 'с ' + startDate.getDate() + ' ' + MONTH_NAMES_GENITIVE[startDate.getMonth()] +
+    periodEl.textContent = kgText + 'с ' + startDate.getDate() + ' ' + MONTH_NAMES_GENITIVE[startDate.getMonth()] +
         ' · ' + daysCounted + ' ' + pluralDays(daysCounted);
 }
 const MONTH_NAMES_GENITIVE = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
@@ -757,17 +787,21 @@ async function renderWeekView() {
     }
     const maxAbs = Math.max(...results.map(r => Math.abs(r.remaining)), goalCalories * 0.15, 200);
     const weekdays = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
-    let html = '<div class="baseline"></div>';
+    let html = '';
     results.forEach(r => {
         const isToday = dateKey(r.d) === todayKey();
-        const hpx = r.logged ? Math.min(100, Math.abs(r.remaining) / maxAbs * 100) : 4;
+        const balance = balanceFromRemaining(r.remaining);
+        // Половина дорожки — на каждую сторону оси, поэтому масштаб вдвое мельче.
+        const hpx = r.logged ? Math.min(50, Math.abs(balance) / maxAbs * 50) : 2;
+        // Дефицит идёт вверх, перебор — вниз: по одному взгляду видно, какой был день.
+        const side = balance > 0 ? 'down' : 'up';
         const color = !r.logged
             ? 'var(--surface2)'
-            : r.remaining >= 0 ? 'linear-gradient(180deg, var(--good), #5FAE33)' : 'linear-gradient(180deg, var(--over), #E23D5C)';
+            : balance <= 0 ? 'linear-gradient(180deg, var(--good), #5FAE33)' : 'linear-gradient(180deg, var(--over), #E23D5C)';
         // Столбик недели — вход в этот день: посмотреть и поправить, даже если он давно прошёл.
         html += `<div class="bar-col ${isToday ? 'today' : ''}" onclick="openDayEditor('${dateKey(r.d)}')">
-      <div class="bar-track" style="align-items:flex-end;">
-        <div class="bar-fill" style="height:${hpx}%; background:${color};"></div>
+      <div class="bar-track">
+        <div class="bar-fill ${side}" style="height:${hpx}%; background:${color};"></div>
       </div>
       <div class="dlabel">${weekdays[r.d.getDay()]}</div>
     </div>`;
@@ -775,7 +809,7 @@ async function renderWeekView() {
     container.innerHTML = html;
     const logged = results.filter(r => r.logged);
     const avg = logged.length > 0 ? logged.reduce((s, r) => s + r.remaining, 0) / logged.length : 0;
-    el('hist-avg').textContent = logged.length > 0 ? (avg >= 0 ? '+' : '') + fmt(avg) : '—';
+    el('hist-avg').textContent = logged.length > 0 ? signedKcal(balanceFromRemaining(avg)) : '—';
     const okDays = logged.filter(r => r.remaining >= 0).length;
     el('hist-days-ok').textContent = okDays + '/' + logged.length;
 }
@@ -879,7 +913,7 @@ function showDayDetail(key, summary) {
       <div class="dd-row"><span>Бюджет</span><b>${fmt(entry.bud)}</b></div>
       <div class="dd-row"><span>Съедено</span><b>${fmt(entry.c)}</b></div>
       <div class="dd-row"><span>Сожжено</span><b>${fmt(entry.b)}</b></div>
-      <div class="dd-row"><span>Баланс</span><b style="color:${remaining >= 0 ? 'var(--good)' : 'var(--over)'}">${remaining >= 0 ? '+' : ''}${fmt(remaining)}</b></div>
+      <div class="dd-row"><span>Баланс</span><b style="color:${balanceColor(balanceFromRemaining(remaining))}">${signedKcal(balanceFromRemaining(remaining))}</b></div>
       ${editBtn}
     `;
     }
@@ -917,7 +951,7 @@ function renderDayEditor() {
     el('dayedit-summary').innerHTML = `
     <div class="stat-card"><div class="v">${fmt(totals.budget)}</div><div class="k">Бюджет</div></div>
     <div class="stat-card"><div class="v" style="color:var(--intake)">${fmt(totals.consumed)}</div><div class="k">Съедено</div></div>
-    <div class="stat-card"><div class="v" style="color:${totals.remaining >= 0 ? 'var(--good)' : 'var(--over)'}">${totals.remaining >= 0 ? '+' : ''}${fmt(totals.remaining)}</div><div class="k">Баланс</div></div>
+    <div class="stat-card"><div class="v" style="color:${balanceColor(balanceFromRemaining(totals.remaining))}">${signedKcal(balanceFromRemaining(totals.remaining))}</div><div class="k">Баланс</div></div>
   `;
     const steps = dayEditor.data.steps || 0;
     const manual = manualWalkEntry(dayEditor.data);
@@ -963,10 +997,16 @@ async function renderYearView() {
             monthSummaries[curM] = { ...monthSummaries[curM], [pad(new Date().getDate())]: { c: Math.round(consumed), b: Math.round(burned), bud: Math.round(budget) } };
         }
     }
-    const jan1 = new Date(viewYear, 0, 1);
-    const startDow = (jan1.getDay() + 6) % 7;
-    const start = new Date(jan1);
-    start.setDate(jan1.getDate() - startDow);
+    // Год рисуется с первой записи, а не с 1 января: пустые клетки до начала дневника
+    // не «нет данных», а «нас тут ещё не было», и занимают полэкрана впустую.
+    const firstKey = await firstFoodDayKey();
+    const firstInThisYear = firstKey && firstKey.slice(0, 4) === String(viewYear)
+        ? new Date(firstKey)
+        : null;
+    const gridStart = firstInThisYear || new Date(viewYear, 0, 1);
+    const startDow = (gridStart.getDay() + 6) % 7;
+    const start = new Date(gridStart);
+    start.setDate(gridStart.getDate() - startDow);
     const end = new Date(viewYear, 11, 31);
     const days = [];
     let cur = new Date(start);
@@ -991,7 +1031,7 @@ async function renderYearView() {
             lastMonthSeen = d.getMonth();
             monthLabelCols.push({ m: d.getMonth(), col });
         }
-        if (!inYear) {
+        if (!inYear || (firstInThisYear && d < firstInThisYear)) {
             cellsHtml += `<div class="year-cell" style="background:transparent;"></div>`;
             return;
         }
@@ -1012,13 +1052,33 @@ async function renderYearView() {
         if (remaining >= 0)
             okCount++;
         const color = dayColor(remaining, entry.bud) || 'var(--surface2)';
-        cellsHtml += `<div class="year-cell" style="background:${color};" title="${key}: ${remaining >= 0 ? '+' : ''}${Math.round(remaining)} ккал"></div>`;
+        cellsHtml += `<div class="year-cell" style="background:${color};" title="${key}: ${signedKcal(balanceFromRemaining(Math.round(remaining)))} ккал"></div>`;
     });
     el('year-grid').innerHTML = cellsHtml;
     el('year-labels').innerHTML = monthLabelCols.map(x => `<span style="grid-column:${x.col + 1}">${MONTH_NAMES_SHORT[x.m]}</span>`).join('');
     const avg = sumCount ? sumRemaining / sumCount : 0;
-    el('year-avg').textContent = (avg >= 0 ? '+' : '') + fmt(avg);
+    el('year-avg').textContent = signedKcal(balanceFromRemaining(avg));
     el('year-days-ok').textContent = `${okCount}/${sumCount}`;
+    scrollYearToToday();
+}
+/**
+ * Полоса года шире экрана, а интересен её правый край — сегодняшний день.
+ * Без этого при открытии видно январь, до которого никому нет дела.
+ */
+function scrollYearToToday() {
+    const scroller = document.querySelector('.year-scroll');
+    if (!scroller)
+        return;
+    // Ширина содержимого появляется не сразу: вкладку только что показали, шрифты и сетка
+    // ещё раскладываются. Пробуем несколько раз и останавливаемся, как только получилось.
+    const attempts = [0, 60, 200, 500];
+    attempts.forEach(delay => setTimeout(() => {
+        if (scroller.scrollWidth <= scroller.clientWidth)
+            return; // прокручивать нечего
+        if (scroller.scrollLeft > 0)
+            return; // уже сдвинули (или человек сам)
+        scroller.scrollLeft = scroller.scrollWidth;
+    }, delay));
 }
 /* ===================== PROFILE ===================== */
 function setGender(g) { genderVal = g; updateSegUI(); updateTdeePreview(); }
