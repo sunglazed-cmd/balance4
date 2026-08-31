@@ -377,13 +377,40 @@ function nativePedometerAvailable() {
 }
 let pedoNative = false;
 let pedoPollTimer = null;
+/**
+ * Забирает у нативного сервиса то, что он насчитал с прошлого опроса.
+ *
+ * Раньше показания датчика просто подменяли число в дне, и поправка руками жила
+ * ровно до следующего опроса — пять секунд. Теперь день хранит последнее применённое
+ * показание (sensorSteps), и к нему прибавляется только прирост. Уменьшил шаги —
+ * поправка остаётся, а новые шаги продолжают считаться поверх неё.
+ */
 async function pedoNativePoll() {
     try {
         const { steps, walkMs } = await window.Capacitor.Plugins.Pedometer.getSteps();
-        if (typeof walkMs === 'number')
-            today.walkMs = walkMs;
-        if (typeof steps === 'number' && steps !== today.steps) {
-            today.steps = steps; // the native service is authoritative — replace, don't add
+        let changed = false;
+        if (typeof steps === 'number') {
+            if (typeof today.sensorSteps !== 'number') {
+                // Первый опрос за этот день (или запись из старой версии): просто принимаем счётчик.
+                today.steps = steps;
+            }
+            else if (steps > today.sensorSteps) {
+                today.steps = Math.max(0, (today.steps || 0) + (steps - today.sensorSteps));
+            }
+            changed = changed || today.sensorSteps !== steps;
+            today.sensorSteps = steps;
+        }
+        if (typeof walkMs === 'number') {
+            if (typeof today.sensorWalkMs !== 'number') {
+                today.walkMs = walkMs;
+            }
+            else if (walkMs > today.sensorWalkMs) {
+                today.walkMs = Math.max(0, (today.walkMs || 0) + (walkMs - today.sensorWalkMs));
+            }
+            changed = changed || today.sensorWalkMs !== walkMs;
+            today.sensorWalkMs = walkMs;
+        }
+        if (changed) {
             pedoUnsavedSteps++;
             renderPedometer();
             if (currentTab === 'today') {
@@ -1579,11 +1606,11 @@ function manualWalkEntry(day) {
 function openWalkModal() {
     const target = currentAddTarget();
     el('walk-title').textContent = walkTargetIsToday() ? 'Ходьба сегодня' : 'Ходьба за этот день';
-    const measured = walkMinutes(target);
-    el('walk-measured').innerHTML = measured > 0
-        ? 'Шагомер насчитал <b>' + measured + '</b> мин в движении и <b>' + fmt(target.steps || 0) + '</b> шагов.'
+    el('walk-measured').textContent = (target.steps || 0) > 0 || walkMinutes(target) > 0
+        ? 'Любое число можно поправить — и в меньшую сторону тоже. Шагомер считает дальше от исправленного, а не возвращает своё.'
         : 'Шагомер за этот день ничего не записал — впиши руками, сколько прошёл.';
     el('walk-steps').value = String(target.steps || 0);
+    el('walk-time').value = String(walkMinutes(target));
     const manual = manualWalkEntry(target);
     el('walk-minutes').value = manual && manual.minutes ? String(manual.minutes) : '';
     updateWalkPreview();
@@ -1602,10 +1629,16 @@ function updateWalkPreview() {
     el('walk-minutes-hint').textContent = minutes > 0
         ? 'Прогулка, которую шагомер не увидел: ' + fmt(walkTimeKcal(minutes)) + ' ккал, попадёт в тренировки'
         : 'Прогулка, которую шагомер не увидел';
+    const timeMinutes = Math.max(0, parseInt(el('walk-time').value) || 0);
+    const pace = timeMinutes > 0 ? Math.round(steps / timeMinutes) : 0;
+    el('walk-time-hint').textContent = pace > 0
+        ? 'Получается ' + pace + ' шагов в минуту' + (pace > 145 ? ' — это уже бег' : pace < 60 ? ' — очень медленно' : '')
+        : 'Столько насчитал шагомер';
 }
 async function saveWalk() {
     const target = currentAddTarget();
     target.steps = Math.max(0, parseInt(el('walk-steps').value) || 0);
+    target.walkMs = Math.max(0, parseInt(el('walk-time').value) || 0) * 60000;
     const minutes = Math.max(0, parseInt(el('walk-minutes').value) || 0);
     const existing = manualWalkEntry(target);
     if (minutes > 0) {

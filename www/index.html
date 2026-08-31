@@ -797,6 +797,12 @@
       </div>
 
       <div class="field">
+        <label>Время в движении, мин</label>
+        <div class="field-input"><input id="walk-time" type="number" inputmode="numeric" min="0" oninput="updateWalkPreview()"></div>
+        <div class="field-hint" id="walk-time-hint">Столько насчитал шагомер</div>
+      </div>
+
+      <div class="field">
         <label>Ходьба без телефона, мин</label>
         <div class="field-input"><input id="walk-minutes" type="number" inputmode="numeric" min="0" placeholder="0" oninput="updateWalkPreview()"></div>
         <div class="field-hint" id="walk-minutes-hint">Прогулка, которую шагомер не увидел</div>
