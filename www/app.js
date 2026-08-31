@@ -129,15 +129,37 @@ function strideMeters(profile) {
     return heightCm * 0.414 / 100; // common walking-stride approximation
 }
 function stepsDistanceM(steps, profile) { return steps * strideMeters(profile); }
-function stepsKcal(steps, weightKg) {
+/** Сколько человек тратит в минуту, просто существуя. Из обмена покоя за сутки. */
+function restingKcalPerMinute() {
+    const bmr = profile ? calcBMR(profile) : 1700;
+    return bmr / 1440;
+}
+/**
+ * Прогулка длится примерно столько, если время не измерено: 110 шагов в минуту —
+ * обычный темп. Нужно, чтобы вычесть обмен покоя у дней без записанного времени.
+ */
+const STEPS_PER_MINUTE = 110;
+/**
+ * Калории за шаги — ЧИСТЫЕ, сверх обмена покоя.
+ *
+ * Формула шага (вес × 0,00057) даёт валовый расход: в него входит и то, что тело
+ * потратило бы за это же время лёжа. Обмен покоя уже сидит в дневном бюджете, поэтому
+ * без вычитания одни и те же калории считались дважды: 14 370 шагов за 124 минуты
+ * давали 737 ккал вместо честных ~580.
+ *
+ * Время берётся измеренное, если оно есть, иначе оценивается по числу шагов.
+ */
+function stepsKcal(steps, weightKg, walkMs) {
     const w = weightKg || 70;
-    return steps * w * 0.00057; // ~0.04 kcal/step at 70kg, scales with body weight
+    const gross = steps * w * 0.00057;
+    const minutes = walkMs && walkMs > 0 ? walkMs / 60000 : steps / STEPS_PER_MINUTE;
+    return Math.max(0, gross - restingKcalPerMinute() * minutes);
 }
 /* ===================== TODAY RENDER ===================== */
 function computeTotalsFor(dayObj) {
     const consumed = dayObj.foods.reduce((s, f) => s + f.kcal, 0);
     const workoutBurn = dayObj.workouts.reduce((s, w) => s + w.kcal, 0);
-    const walkBurn = stepsKcal(dayObj.steps || 0, profile ? profile.weight : 70);
+    const walkBurn = stepsKcal(dayObj.steps || 0, profile ? profile.weight : 70, dayObj.walkMs);
     const burned = workoutBurn + walkBurn;
     const goalCalories = profile ? calcGoalCalories(profile) : 2000;
     const budget = goalCalories + burned;
@@ -247,7 +269,7 @@ function escapeHtml(s) { return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<':
 function renderPedometer() {
     const steps = today.steps || 0;
     const dist = stepsDistanceM(steps, profile);
-    const kcal = stepsKcal(steps, profile ? profile.weight : 70);
+    const kcal = stepsKcal(steps, profile ? profile.weight : 70, today.walkMs);
     el('pedo-steps').textContent = fmt(steps);
     el('pedo-distance').textContent = (dist / 1000).toLocaleString('ru-RU', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' км';
     el('pedo-kcal').textContent = fmt(kcal) + ' ккал';
@@ -311,10 +333,15 @@ function registerWalkTime(target) {
 function walkMinutes(day) {
     return Math.round((day.walkMs || 0) / 60000);
 }
-/** Калории за ходьбу по времени: формула та же, что у обычной тренировки. */
+/**
+ * Калории за ходьбу по времени — тоже чистые: из расхода по MET вычитается обмен покоя
+ * за те же минуты, иначе прогулка без телефона считалась бы щедрее, чем та же прогулка
+ * с телефоном в кармане.
+ */
 function walkTimeKcal(minutes) {
     const weight = profile ? profile.weight : 70;
-    return Math.round(WALK_MET * 3.5 * weight / 200 * minutes);
+    const gross = WALK_MET * 3.5 * weight / 200 * minutes;
+    return Math.max(0, Math.round(gross - restingKcalPerMinute() * minutes));
 }
 function pedoRegisterStep() {
     today.steps = (today.steps || 0) + 1;
@@ -323,7 +350,7 @@ function pedoRegisterStep() {
     // Update the live numbers immediately for responsiveness...
     el('pedo-steps').textContent = fmt(today.steps);
     const dist = stepsDistanceM(today.steps, profile);
-    const kcal = stepsKcal(today.steps, profile ? profile.weight : 70);
+    const kcal = stepsKcal(today.steps, profile ? profile.weight : 70, today.walkMs);
     el('pedo-distance').textContent = (dist / 1000).toLocaleString('ru-RU', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' км';
     el('pedo-kcal').textContent = fmt(kcal) + ' ккал';
     // ...but only refresh the ring/chips + persist to storage every few steps (throttled) to avoid excess writes.
@@ -721,7 +748,7 @@ async function renderWeekView() {
             historyCache[key] = data;
         }
         const consumed = (data.foods || []).reduce((s, f) => s + f.kcal, 0);
-        const burned = (data.workouts || []).reduce((s, w) => s + w.kcal, 0) + stepsKcal(data.steps || 0, profile ? profile.weight : 70);
+        const burned = (data.workouts || []).reduce((s, w) => s + w.kcal, 0) + stepsKcal(data.steps || 0, profile ? profile.weight : 70, data.walkMs);
         const budget = goalCalories + burned;
         // День без единой записи — это не «сэкономленный дневной бюджет», а пропуск:
         // засчитывать его в средний баланс значило бы хвалить себя за невнесённые данные.
@@ -1620,12 +1647,16 @@ function closeWalkModal() {
     el('overlay-walk').classList.remove('show');
 }
 /** Показывает, во что превратятся введённые числа, до нажатия «Сохранить». */
+/** Время из поля листа ходьбы, миллисекунды — по нему считается предпросмотр калорий. */
+function timeFieldMs() {
+    return Math.max(0, parseInt(el('walk-time').value) || 0) * 60000;
+}
 function updateWalkPreview() {
     const steps = Math.max(0, parseInt(el('walk-steps').value) || 0);
     const minutes = Math.max(0, parseInt(el('walk-minutes').value) || 0);
     const dist = stepsDistanceM(steps, profile) / 1000;
     el('walk-steps-hint').textContent = dist.toLocaleString('ru-RU', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) +
-        ' км · ' + fmt(stepsKcal(steps, profile ? profile.weight : 70)) + ' ккал';
+        ' км · ' + fmt(stepsKcal(steps, profile ? profile.weight : 70, timeFieldMs())) + ' ккал';
     el('walk-minutes-hint').textContent = minutes > 0
         ? 'Прогулка, которую шагомер не увидел: ' + fmt(walkTimeKcal(minutes)) + ' ккал, попадёт в тренировки'
         : 'Прогулка, которую шагомер не увидел';
