@@ -383,6 +383,13 @@
     opacity:0; pointer-events:none; transition: opacity 0.25s ease;
   }
   .overlay.show{ opacity:1; pointer-events:auto; }
+  /*
+    Листы еды, тренировки и ходьбы открываются в том числе ИЗ редактора дня, поверх него.
+    При одинаковом z-index побеждает тот, кто ниже в разметке, — редактор дня. Его затемнение
+    накрывало лист еды целиком: кнопка «Добавить» срабатывала, лист открывался, и его никто
+    не видел. Поэтому редактор дня остаётся на общем слое, а листы поверх него.
+  */
+  #overlay-food, #overlay-workout, #overlay-walk{ z-index:120; }
   .sheet{
     width:100%; max-width:460px; background: #1A1725; border-radius: 26px 26px 0 0;
     padding: 10px 20px calc(24px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))) 20px;
